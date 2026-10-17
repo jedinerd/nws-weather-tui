@@ -5,7 +5,6 @@ NWS Weather TUI — NWS API client (weather endpoints + delegation to sub-client
 
 from __future__ import annotations
 
-import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -25,30 +24,22 @@ from nws_weather_tui.constants import BASE
 from nws_weather_tui.radar.client import RadarFetcher
 
 
-class _ThreadLocalSession:
-    """Gives each thread its own requests.Session so concurrent background
-    fetches (weather refresh, radar frames) can run in parallel instead of
-    serializing on a shared, lock-guarded session."""
+# Concurrent fetches (the weather refresh fans out, and radar frames and the
+# favorites dashboard use pools) share one session, so keep-alive connections
+# are reused across threads and refreshes instead of every worker thread
+# paying for a fresh TLS handshake. The pool is sized for those workers.
+SESSION_POOL_SIZE = 16
 
-    def __init__(self, headers: Dict[str, str]) -> None:
-        self._headers = headers
-        self._local = threading.local()
 
-    def _session(self) -> requests.Session:
-        s = getattr(self._local, "session", None)
-        if s is None:
-            s = requests.Session()
-            s.headers.update(self._headers)
-            self._local.session = s
-        return s
-
-    def get(self, *args, **kwargs):
-        return self._session().get(*args, **kwargs)
-
-    @property
-    def headers(self):
-        return self._headers
-
+def _make_session(headers: Dict[str, str]) -> requests.Session:
+    s = requests.Session()
+    s.headers.update(headers)
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=SESSION_POOL_SIZE, pool_maxsize=SESSION_POOL_SIZE
+    )
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
 
 def _is_client_error(err: requests.HTTPError) -> bool:
     """A 4xx other than 429: retrying can't help (404, 400, 403...), whereas a
@@ -66,7 +57,7 @@ class NWSClient:
         fixture_dir: Optional[str] = None,
         fixture_mode: str = "replay",
     ) -> None:
-        live = _ThreadLocalSession(
+        live = _make_session(
             {
                 "User-Agent": user_agent,
                 "Accept": "application/geo+json, application/json",

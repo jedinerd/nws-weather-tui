@@ -68,7 +68,10 @@ def _nws(session: ScriptedSession) -> Any:
     from nws_weather_tui.constants import DEFAULT_CONFIG
 
     c = NWSClient("ua", 5, dict(DEFAULT_CONFIG["cache_ttls"]))
-    c.s = session
+    # The sub-clients hold their own reference to the session, so swap
+    # all of them: nothing here may reach the real network.
+    for sub in (c, c._radar, c._geocoder, c._boundaries, c._air_quality, c._uv_index):
+        sub.s = session
     return c
 
 
@@ -284,3 +287,82 @@ def test_unknown_state_bbox_is_remembered() -> None:
     assert first >= 2
     assert client.state_bbox("XX") is None
     assert len(s.calls) == first
+
+
+# ---------------------------------------------------------------------------
+# The weather refresh: one thread fans out the independent requests
+# ---------------------------------------------------------------------------
+
+_CORE = {
+    "/observations/latest": (200, {"properties": {"temperature": {"value": 12.0},
+                                                  "textDescription": "Clear"}}),
+    "https://x/fc": (200, {"properties": {"periods": [
+        {"name": "Today", "isDaytime": True, "temperature": 60, "shortForecast": "Sunny"}]}}),
+    "https://x/hr": (200, {"properties": {"periods": [
+        {"startTime": "2026-10-16T12:00:00-04:00", "temperature": 55,
+         "shortForecast": "Sunny"}]}}),
+    "/alerts/active?point": (200, {"features": []}),
+}
+
+
+def _refresh(session: ScriptedSession) -> Dict[str, Any]:
+    """Run _bg_weather_fetch against `session` with the point already known
+    and return what it leaves for the main thread."""
+    import threading
+    from types import SimpleNamespace
+
+    from nws_weather_tui.weather_refresh import _bg_weather_fetch
+
+    app = SimpleNamespace(client=_nws(session), _bg_lock=threading.Lock(),
+                          _bg_weather_pending=None)
+    ctx = {
+        "lat": 39.9612, "lon": -82.9988, "units": "us",
+        "points_data": {"properties": {}}, "forecast_url": "https://x/fc",
+        "hourly_url": "https://x/hr", "stations_url": "https://x/stations",
+        "station_id": "KCMH", "hourly_hours": 0, "office_id": "ILN",
+        "grid_data_url": "https://x/grid", "state_code": "OH", "allow_offline": True,
+    }
+    _bg_weather_fetch(app, ctx, 0)
+    return app._bg_weather_pending
+
+
+def test_refresh_collects_every_source(no_sleep: List[float]) -> None:
+    """The core answers arrive; the extras (gridpoint data, area alerts,
+    AFD/HWO, air quality, UV) are all unreachable and just come back empty."""
+    result = _refresh(ScriptedSession(dict(_CORE)))
+    assert result["ok"] is True
+    assert result["current"].temperature_c == 12.0
+    assert [p.name for p in result["forecast_periods"]] == ["Today"]
+    assert len(result["hourly_periods"]) == 1
+    assert result["hourly_periods"][0].precip_mm is None  # gridpoint fetch failed quietly
+    assert result["alerts"] == [] and result["area_alerts"] == []
+    assert result["afd"] is None and result["afd_earlier"] == [] and result["hwo"] is None
+    assert result["air_quality"] is None and result["uv_index"] is None
+
+
+def test_refresh_goes_offline_when_a_core_fetch_fails(no_sleep: List[float]) -> None:
+    script = dict(_CORE)
+    script["https://x/fc"] = (503, "busy")
+    result = _refresh(ScriptedSession(script))
+    assert result["ok"] is False
+    assert result["error"].startswith("HTTPError") and result["allow_offline"] is True
+    assert "current" not in result  # nothing half-applied
+
+
+def test_refresh_requests_overlap(no_sleep: List[float]) -> None:
+    """A dozen requests at 0.15 s each took ~2 s one after another; fanned
+    out, the refresh takes about as long as its slowest chain."""
+    import time
+
+    class SlowSession(ScriptedSession):
+        def get(self, url: str, params: Any = None, **kw: Any) -> Any:
+            time.sleep(0.15)
+            return super().get(url, params, **kw)
+
+    s = SlowSession(dict(_CORE))
+    t0 = time.monotonic()
+    result = _refresh(s)
+    elapsed = time.monotonic() - t0
+    assert result["ok"] is True
+    assert len(s.calls) >= 10, s.calls
+    assert elapsed < 0.15 * len(s.calls) / 2, f"{elapsed:.2f}s for {len(s.calls)} requests"

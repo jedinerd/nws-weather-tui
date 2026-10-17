@@ -8,10 +8,13 @@ from __future__ import annotations
 import re
 import threading
 import time
-from typing import Any, Dict, List, TYPE_CHECKING
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from nws_weather_tui.helpers import dbg
 from nws_weather_tui.models import (
+    AlertItem,
+    HourlyPeriod,
     extract_air_quality,
     extract_alerts,
     extract_current,
@@ -25,6 +28,9 @@ from nws_weather_tui.text_product import segment_for_zones
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
+
+# Independent requests in one refresh run at most this many at a time.
+MAX_PARALLEL_FETCHES = 8
 
 
 def refresh_all(app: "App", force: bool = False, allow_offline: bool = False) -> None:
@@ -63,6 +69,57 @@ def _point_zones(points_data: Any) -> List[str]:
         if isinstance(url, str) and url.rstrip("/"):
             out.append(url.rstrip("/").rsplit("/", 1)[-1].upper())
     return out
+
+
+def _fetch_hourly(
+    app: "App", hourly_url: str, units: str, hours: int, grid_data_url: Optional[str]
+) -> List[HourlyPeriod]:
+    hf = extract_hourly(app.client.forecast_hourly(hourly_url, units))
+    hourly_periods = hf[:hours] if hours > 0 else hf
+    # Gridpoint series (precip, feels-like, gusts, sky, thunder) are
+    # supplementary — a failure here must not take the whole refresh
+    # offline, and simply leaves those hourly fields empty.
+    if grid_data_url:
+        try:
+            grid = extract_grid_series(app.client.forecast_grid_data(grid_data_url))
+            merge_grid_into_hourly(hourly_periods, grid)
+        except Exception as ge:
+            dbg(f"Gridpoint data fetch failed: {ge}")
+    return hourly_periods
+
+
+def _fetch_alerts(
+    app: "App", lat: float, lon: float, state: Optional[str]
+) -> Tuple[List[AlertItem], List[AlertItem]]:
+    """(alerts for the point, alerts elsewhere in the state). The latter give
+    the Alerts view something to say when the point has none; supplementary,
+    so its failures are quiet."""
+    alerts = extract_alerts(app.client.alerts(lat, lon))
+    area: List[AlertItem] = []
+    if state and not alerts:
+        try:
+            area = extract_alerts(app.client.alerts_area(state))
+        except Exception as ae:
+            dbg(f"Area alerts fetch failed: {ae}")
+    return alerts, area
+
+
+def _fetch_discussions(
+    app: "App", office_id: str
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    # One task for both so the product listing is fetched once, not twice.
+    return (
+        app.client.forecast_discussion(office_id),
+        app.client.earlier_forecast_discussions(office_id),
+    )
+
+
+def _fetch_hwo(app: "App", office_id: str, points_data: Any) -> Optional[Dict[str, Any]]:
+    hwo = app.client.hazardous_weather_outlook(office_id)
+    if hwo:
+        # An HWO has a segment per zone group; show only ours.
+        hwo["text"] = segment_for_zones(hwo["text"], _point_zones(points_data))
+    return hwo
 
 
 def _bg_weather_fetch(app: "App", ctx: Dict[str, Any], gen: int) -> None:
@@ -112,63 +169,52 @@ def _bg_weather_fetch(app: "App", ctx: Dict[str, Any], gen: int) -> None:
                     station_id = sid
                     result["station_id"] = sid
 
+        # Everything else needs only the URLs above, so it runs concurrently:
+        # a cold start or location change then takes about as long as the
+        # slowest request instead of the sum of a dozen. The observation,
+        # forecasts and alerts are the core — any of those failing takes the
+        # refresh offline, as before. AFD/HWO, air quality and UV index are
+        # supplementary sources whose failures are swallowed in their clients.
+        state = result.get("state_code", ctx["state_code"])
+        tasks: Dict[str, Callable[[], Any]] = {}
         if station_id:
-            result["current"] = extract_current(
-                app.client.latest_observation(station_id)
-            )
+            sid = station_id
+            tasks["current"] = lambda: extract_current(app.client.latest_observation(sid))
         if forecast_url:
-            result["forecast_periods"] = extract_forecast(
-                app.client.forecast(forecast_url, ctx["units"])
+            fc_url = forecast_url
+            tasks["forecast_periods"] = lambda: extract_forecast(
+                app.client.forecast(fc_url, ctx["units"])
             )
         if hourly_url:
-            hf = extract_hourly(
-                app.client.forecast_hourly(hourly_url, ctx["units"])
+            h_url, gd_url = hourly_url, grid_data_url
+            tasks["hourly_periods"] = lambda: _fetch_hourly(
+                app, h_url, ctx["units"], ctx["hourly_hours"], gd_url
             )
-            h = ctx["hourly_hours"]
-            hourly_periods = hf[:h] if h > 0 else hf
-            # Gridpoint series (precip, feels-like, gusts, sky, thunder) are
-            # supplementary — a failure here must not take the whole refresh
-            # offline, and simply leaves those hourly fields empty.
-            if grid_data_url:
-                try:
-                    grid = extract_grid_series(
-                        app.client.forecast_grid_data(grid_data_url)
-                    )
-                    merge_grid_into_hourly(hourly_periods, grid)
-                except Exception as ge:
-                    dbg(f"Gridpoint data fetch failed: {ge}")
-            result["hourly_periods"] = hourly_periods
-
-        result["alerts"] = extract_alerts(
-            app.client.alerts(ctx["lat"], ctx["lon"])
-        )
-        # Alerts elsewhere in the state give the Alerts view something to
-        # say when this point has none; supplementary, so failures are quiet.
-        state = result.get("state_code", ctx["state_code"])
-        if state and not result["alerts"]:
-            try:
-                result["area_alerts"] = extract_alerts(app.client.alerts_area(state))
-            except Exception as ae:
-                dbg(f"Area alerts fetch failed: {ae}")
-        # AFD/HWO are supplementary forecaster narratives — failures here
-        # must not take the whole refresh offline.
+        tasks["alerts"] = lambda: _fetch_alerts(app, ctx["lat"], ctx["lon"], state)
         if office_id:
-            result["afd"] = app.client.forecast_discussion(office_id)
-            result["afd_earlier"] = app.client.earlier_forecast_discussions(office_id)
-            hwo = app.client.hazardous_weather_outlook(office_id)
-            if hwo:
-                # An HWO has a segment per zone group; show only ours.
-                hwo["text"] = segment_for_zones(hwo["text"], _point_zones(points_data))
-            result["hwo"] = hwo
-        # Air quality and UV index are supplementary, non-NWS sources —
-        # failures there are swallowed internally and must not take the
-        # whole refresh offline.
-        result["air_quality"] = extract_air_quality(
+            office = office_id
+            tasks["afd"] = lambda: _fetch_discussions(app, office)
+            tasks["hwo"] = lambda: _fetch_hwo(app, office, points_data)
+        tasks["air_quality"] = lambda: extract_air_quality(
             app.client.air_quality(ctx["lat"], ctx["lon"])
         )
-        result["uv_index"] = extract_uv_index(
+        tasks["uv_index"] = lambda: extract_uv_index(
             app.client.uv_index(ctx["lat"], ctx["lon"])
         )
+
+        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FETCHES, len(tasks))) as pool:
+            futures = {key: pool.submit(fn) for key, fn in tasks.items()}
+            fetched = {key: fut.result() for key, fut in futures.items()}
+
+        for key in ("current", "forecast_periods", "hourly_periods",
+                    "air_quality", "uv_index"):
+            if key in fetched:
+                result[key] = fetched[key]
+        result["alerts"], result["area_alerts"] = fetched["alerts"]
+        if "afd" in fetched:
+            result["afd"], result["afd_earlier"] = fetched["afd"]
+        if "hwo" in fetched:
+            result["hwo"] = fetched["hwo"]
         result["ok"] = True
 
     except Exception as e:
@@ -178,7 +224,6 @@ def _bg_weather_fetch(app: "App", ctx: Dict[str, Any], gen: int) -> None:
     result["_gen"] = gen
     with app._bg_lock:
         app._bg_weather_pending = result
-
 
 def apply_bg_weather(app: "App") -> None:
     """Main-thread: apply completed background weather results."""
