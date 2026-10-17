@@ -48,17 +48,9 @@ def _pixel_to_nws_idx_vectorized(
 
     dist_sq = dr * dr + dg * dg + db * db
 
-    min_dist_sq = dist_sq.min(axis=2)
-    
-    # argmin on axis 2 gives us the index along the palette dimension
-    # We need to flatten the first two dims, compute argmin, then reshape
-    flat_dist = dist_sq.reshape(-1, dist_sq.shape[-1])
-    flat_argmin = flat_dist.argmin(axis=1)
-    result = np.where(
-        min_dist_sq.reshape(-1) < 8000,
-        flat_argmin + 1,
-        0
-    ).reshape(min_dist_sq.shape)
+    nearest = dist_sq.argmin(axis=2)
+    min_dist_sq = np.take_along_axis(dist_sq, nearest[:, :, None], axis=2)[:, :, 0]
+    result = np.where(min_dist_sq < 8000, nearest + 1, 0)
 
     vmax = np.maximum(np.maximum(r, g), b)
     vmin = np.minimum(np.minimum(r, g), b)
@@ -225,9 +217,9 @@ def png_to_ascii(
         char_array = np.array(list(chars), dtype='U1')
         ascii_chars = np.where(mask_active, char_array[idx], ' ')
 
-        kind_chars = np.array([[chr(c) for c in row] for row in kind_arr])
-
     lines = ["".join(row) for row in ascii_chars]
-    kind_lines = ["".join(row) for row in kind_chars]
+    # The kinds are ASCII codes already; decode each row rather than build
+    # a Python list of one-character strings per cell.
+    kind_lines = [row.tobytes().decode("ascii") for row in kind_arr]
 
     return (lines, kind_lines)

@@ -54,6 +54,19 @@ from nws_weather_tui.views import (
 )
 from nws_weather_tui.weather_refresh import refresh_all
 
+_DRAWERS = {
+    "current": draw_current,
+    "forecast": draw_forecast,
+    "hourly": draw_hourly,
+    "alerts": draw_alerts,
+    "help": draw_help,
+    "moon": draw_moon,
+    "favorites": draw_favorites,
+    "afd": draw_afd,
+    "hwo": draw_hwo,
+    "dashboard": draw_dashboard,
+}
+
 
 class App:
     def __init__(
@@ -364,19 +377,7 @@ class App:
             self.stdscr.refresh()
             return
 
-        drawers = {
-            "current": draw_current,
-            "forecast": draw_forecast,
-            "hourly": draw_hourly,
-            "alerts": draw_alerts,
-            "help": draw_help,
-            "moon": draw_moon,
-            "favorites": draw_favorites,
-            "afd": draw_afd,
-            "hwo": draw_hwo,
-            "dashboard": draw_dashboard,
-        }
-        drawer = drawers.get(self.view)
+        drawer = _DRAWERS.get(self.view)
         if drawer:
             drawer(self, win)
 

@@ -45,13 +45,24 @@ def get_sunrise_sunset(
 ) -> Tuple[Optional[dt.datetime], Optional[dt.datetime]]:
     if sun is None or LocationInfo is None:
         return None, None
+    # LocationInfo defaults to Europe/London, which puts the US's sunset
+    # on the previous calendar day; use the local zone the app displays
+    # in, with the offset in force on `date` (not today's: across a DST
+    # change that would land an hour off).
+    local_noon = dt.datetime(date.year, date.month, date.day, 12).astimezone()
+    return _sun_times(lat, lon, date, local_noon.utcoffset())
+
+
+@lru_cache(maxsize=512)
+def _sun_times(
+    lat: float, lon: float, date: dt.date, utc_offset: Optional[dt.timedelta]
+) -> Tuple[Optional[dt.datetime], Optional[dt.datetime]]:
+    # The views ask for the same week of dates on every draw tick; the
+    # answer only changes with the location, the date or the zone's offset
+    # (keyed as a timedelta: the local tzinfo object itself may not hash).
     try:
         loc = LocationInfo(latitude=lat, longitude=lon)
-        # LocationInfo defaults to Europe/London, which puts the US's sunset
-        # on the previous calendar day; use the local zone the app displays
-        # in, with the offset in force on `date` (not today's: across a DST
-        # change that would land an hour off).
-        local_tz = dt.datetime(date.year, date.month, date.day, 12).astimezone().tzinfo
+        local_tz = dt.timezone(utc_offset) if utc_offset is not None else dt.timezone.utc
         s = sun(loc.observer, date=date, tzinfo=local_tz)
         return s["sunrise"].astimezone(), s["sunset"].astimezone()
     except Exception:
@@ -84,14 +95,17 @@ def text_width(s: str) -> int:
 
 def fit_width(s: str, width: int, align: str = "<") -> str:
     """Truncate (with …) or pad `s` to exactly `width` cells."""
-    if text_width(s) > width:
-        out = ""
+    w = text_width(s)
+    if w > width:
+        out, w = "", 0
         for ch in s:
-            if text_width(out + ch) > width - 1:
+            cw = text_width(ch)
+            if w + cw > width - 1:
                 break
             out += ch
-        s = out + "…"
-    pad = " " * max(0, width - text_width(s))
+            w += cw
+        s, w = out + "…", w + 1
+    pad = " " * max(0, width - w)
     return pad + s if align == ">" else s + pad
 
 

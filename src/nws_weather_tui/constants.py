@@ -145,7 +145,8 @@ def load_config() -> Tuple[Dict[str, Any], Optional[str]]:
     if not isinstance(on_disk, dict):
         return _quarantine_config("is not a JSON object")
     cfg = deep_merge(DEFAULT_CONFIG, on_disk)
-    save_json(CONFIG_PATH, cfg)
+    if cfg != on_disk:  # fill in new defaults; otherwise leave the file alone
+        save_json(CONFIG_PATH, cfg)
     return cfg, None
 
 

@@ -588,3 +588,84 @@ def test_cache_survives_concurrent_use() -> None:
     for t in threads:
         t.join(timeout=30)
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Radar drawing: runs of equal attributes go out as one addstr each
+# ---------------------------------------------------------------------------
+
+class _Canvas:
+    """Records what addstr paints, cell by cell, whatever the call shape."""
+
+    def __init__(self, cols: int) -> None:
+        self.cols = cols
+        self.cells: Dict[int, tuple] = {}
+        self.calls = 0
+
+    def addstr(self, y: int, x: int, s: str, attr: int = 0) -> None:
+        self.calls += 1
+        for i, ch in enumerate(s):
+            if x + i >= self.cols:
+                raise Exception("off the edge")
+            self.cells[x + i] = (ch, attr)
+
+
+def test_halfblock_line_draws_runs_not_cells(monkeypatch: Any) -> None:
+    import curses
+
+    from nws_weather_tui.radar.renderer import (
+        _cell_attr, draw_radar_halfblock_line, radar_cell_attr,
+    )
+
+    monkeypatch.setattr(curses, "color_pair", lambda n: n << 8)
+    _cell_attr.cache_clear()
+    row = [(" ", 0, 0)] * 3 + [("▀", 4, 0)] * 5 + [("█", 7, 7)] * 4 + [("▄", 2, 0)] * 2
+    fast = _Canvas(40)
+    draw_radar_halfblock_line(fast, 0, row, 40, x_off=5)
+    slow = _Canvas(40)
+    for i, (ch, fg, bg) in enumerate(row):
+        slow.addstr(0, 5 + i, ch, radar_cell_attr(ch, fg, bg))
+    assert fast.cells == slow.cells
+    assert fast.calls == 4 and slow.calls == len(row)
+
+
+def test_overlay_lines_skip_spaces_and_merge_runs(monkeypatch: Any) -> None:
+    import curses
+
+    from nws_weather_tui.radar.renderer import draw_city_overlay_line, draw_state_overlay_line
+
+    monkeypatch.setattr(curses, "color_pair", lambda n: n << 8)
+    state = _Canvas(30)
+    draw_state_overlay_line(state, 0, "  ──·  │ ", 30, x_off=2)
+    assert sorted(state.cells) == [4, 5, 6, 9]  # spaces leave the radar showing
+    assert state.calls == 2
+
+    city = _Canvas(30)
+    draw_city_overlay_line(city, 0, " @DEN ◉you", 30, x_off=0)
+    attrs = {x: a for x, (_, a) in city.cells.items()}
+    assert attrs[1] == curses.color_pair(12) | curses.A_BOLD   # @ marker
+    assert attrs[2] == attrs[3] == attrs[4] == curses.color_pair(3) | curses.A_BOLD
+    assert attrs[6] == curses.color_pair(4) | curses.A_BOLD    # ◉ you
+    assert city.calls == 4  # "@", "DEN", "◉", "you"
+
+
+def test_unchanged_config_is_not_rewritten(tmp_path: Any, monkeypatch: Any) -> None:
+    import os
+    import time
+
+    from nws_weather_tui import constants
+    from nws_weather_tui.constants import DEFAULT_CONFIG, load_config, save_json
+
+    path = str(tmp_path / "config.json")
+    monkeypatch.setattr(constants, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(constants, "CONFIG_PATH", path)
+    save_json(path, DEFAULT_CONFIG)
+    before = os.stat(path).st_mtime_ns
+    time.sleep(0.02)
+    cfg, warning = load_config()
+    assert warning is None and cfg == DEFAULT_CONFIG
+    assert os.stat(path).st_mtime_ns == before  # nothing to add: left alone
+    save_json(path, {"units": "si"})
+    load_config()
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["radar"] == DEFAULT_CONFIG["radar"]  # new defaults filled in

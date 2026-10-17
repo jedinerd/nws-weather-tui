@@ -6,7 +6,8 @@ NWS Weather TUI — Radar curses rendering functions.
 from __future__ import annotations
 
 import curses
-from typing import List
+from functools import lru_cache
+from typing import Iterable, List, Tuple
 
 from nws_weather_tui.helpers import safe_addstr
 from nws_weather_tui.radar.decode import RadarCell
@@ -17,8 +18,10 @@ from nws_weather_tui.radar.palette import (
 )
 
 
-def radar_cell_attr(char: str, fg_idx: int, bg_idx: int) -> int:
-    """Return curses attr for a radar halfblock cell."""
+@lru_cache(maxsize=None)
+def _cell_attr(fg_idx: int, bg_idx: int) -> int:
+    # Pair numbers are fixed once curses is initialised; the same few hundred
+    # (fg, bg) combinations come up for every cell of every frame.
     if fg_idx == 0 and bg_idx == 0:
         return curses.A_DIM
     if bg_idx == 0:
@@ -27,6 +30,11 @@ def radar_cell_attr(char: str, fg_idx: int, bg_idx: int) -> int:
     if pair_num < 256:
         return curses.color_pair(pair_num)
     return curses.color_pair(radar_single_pair(fg_idx))
+
+
+def radar_cell_attr(char: str, fg_idx: int, bg_idx: int) -> int:
+    """Return curses attr for a radar halfblock cell."""
+    return _cell_attr(fg_idx, bg_idx)
 
 
 def radar_char_attr_ascii(ch: str, ramp: str, kind: str = " ") -> int:
@@ -47,14 +55,38 @@ def radar_char_attr_ascii(ch: str, ramp: str, kind: str = " ") -> int:
     return base | curses.A_BOLD
 
 
+def _draw_runs(
+    win, y: int, x0: int, cells: Iterable[Tuple[str, int]], transparent: bool = False
+) -> None:
+    """Draw (char, attr) cells left to right from x0, one addstr per run of
+    equal attr rather than one per cell: a 200x50 radar panel is 10,000
+    cells, redrawn several times a second. With `transparent`, spaces are
+    skipped so whatever is under them (the radar) shows through."""
+    run: List[str] = []
+    run_attr = 0
+    run_x = x0
+    for i, (ch, attr) in enumerate(cells):
+        skip = transparent and ch == " "
+        if run and (skip or attr != run_attr):
+            safe_addstr(win, y, run_x, "".join(run), run_attr)
+            run = []
+        if skip:
+            continue
+        if not run:
+            run_x, run_attr = x0 + i, attr
+        run.append(ch)
+    if run:
+        safe_addstr(win, y, run_x, "".join(run), run_attr)
+
+
 def draw_radar_halfblock_line(
     win, y: int, row_cells: List[RadarCell], cols: int, x_off: int = 0
 ) -> None:
     max_w = max(0, cols - 1 - x_off)
-    x_base = max(0, x_off)
-    for i, (char, fg_idx, bg_idx) in enumerate(row_cells[:max_w]):
-        attr = radar_cell_attr(char, fg_idx, bg_idx)
-        safe_addstr(win, y, x_base + i, char, attr)
+    _draw_runs(
+        win, y, max(0, x_off),
+        ((ch, _cell_attr(fg_idx, bg_idx)) for ch, fg_idx, bg_idx in row_cells[:max_w]),
+    )
 
 
 def draw_radar_ascii_line(
@@ -71,31 +103,18 @@ def draw_radar_ascii_line(
     kind_line = (kind_line or "").ljust(len(line))[:max_w]
     if not line:
         return
-    x = max(0, x_off)
-    run_attr = radar_char_attr_ascii(line[0], ramp, kind_line[0])
-    run: List[str] = [line[0]]
-    for i, ch in enumerate(line[1:], 1):
-        a = radar_char_attr_ascii(ch, ramp, kind_line[i] if i < len(kind_line) else " ")
-        if a == run_attr:
-            run.append(ch)
-        else:
-            safe_addstr(win, y, x, "".join(run), run_attr)
-            x += len(run)
-            run = [ch]
-            run_attr = a
-    safe_addstr(win, y, x, "".join(run), run_attr)
+    _draw_runs(
+        win, y, max(0, x_off),
+        ((ch, radar_char_attr_ascii(ch, ramp, kind_line[i])) for i, ch in enumerate(line)),
+    )
 
 
 def draw_state_overlay_line(
     win, y: int, line: str, cols: int, x_off: int = 0
 ) -> None:
     line = (line or "")[: max(0, cols - 1 - x_off)]
-    for x, ch in enumerate(line):
-        if ch != " ":
-            safe_addstr(
-                win, y, x + max(0, x_off), ch,
-                curses.color_pair(2) | curses.A_DIM
-            )
+    attr = curses.color_pair(2) | curses.A_DIM
+    _draw_runs(win, y, max(0, x_off), ((ch, attr) for ch in line), transparent=True)
 
 
 def draw_alert_overlay_line(
@@ -104,24 +123,23 @@ def draw_alert_overlay_line(
     """Draw NWS alert (warning/watch) polygon outlines in bold red."""
     line = (line or "")[: max(0, cols - 1 - x_off)]
     attr = curses.color_pair(4) | curses.A_BOLD
-    for x, ch in enumerate(line):
-        if ch != " ":
-            safe_addstr(win, y, x + max(0, x_off), ch, attr)
+    _draw_runs(win, y, max(0, x_off), ((ch, attr) for ch in line), transparent=True)
 
 
 def draw_city_overlay_line(
     win, y: int, line: str, cols: int, x_off: int = 0
 ) -> None:
     line = (line or "")[: max(0, cols - 1 - x_off)]
-    for x, ch in enumerate(line):
-        if ch != " ":
-            attr = {
-                "O": curses.color_pair(1) | curses.A_BOLD,
-                "◉": curses.color_pair(4) | curses.A_BOLD,
-                "@": curses.color_pair(12) | curses.A_BOLD,
-            }.get(ch, curses.color_pair(3) | curses.A_BOLD)
-            safe_addstr(win, y, x + max(0, x_off), ch, attr)
-
+    special = {
+        "O": curses.color_pair(1) | curses.A_BOLD,
+        "◉": curses.color_pair(4) | curses.A_BOLD,
+        "@": curses.color_pair(12) | curses.A_BOLD,
+    }
+    label_attr = curses.color_pair(3) | curses.A_BOLD
+    _draw_runs(
+        win, y, max(0, x_off),
+        ((ch, special.get(ch, label_attr)) for ch in line), transparent=True,
+    )
 
 def draw_radar_legend(
     win, y: int, x: int, cols: int, has_256color: bool
