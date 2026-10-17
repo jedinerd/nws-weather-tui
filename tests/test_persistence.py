@@ -7,10 +7,11 @@ so a field that doesn't survive the round trip is missing (or wrong) offline.
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import json
 import os
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Dict, Optional
 
 import pytest
 
@@ -219,3 +220,40 @@ def test_state_with_wrong_types_loads_what_it_can(config_dir: str) -> None:
     assert h.temperature is None and h.pop == 40 and h.start.hour == 15
     (a,) = app.alerts
     assert a.event == "Heat Advisory" and a.sent is None and a.expires is None
+
+
+def test_from_dict_follows_the_dataclass_fields() -> None:
+    """A new model field needs no change in persistence: it is saved and
+    restored by name, coerced by its declared type."""
+    from nws_weather_tui.persistence import from_dict
+
+    @dataclasses.dataclass
+    class Thing:
+        name: str
+        when: Optional[dt.datetime]
+        score: Optional[float]
+        flag: Optional[bool] = None
+        extra: Optional[Dict[str, Any]] = None
+        tags: list = dataclasses.field(default_factory=list)
+
+    t = from_dict(Thing, {"name": 7, "when": "2026-10-13T15:00:00-07:00", "score": 3,
+                          "flag": True, "extra": {"a": 1}, "tags": ["x"]})
+    assert (t.name, t.when.hour, t.score, t.flag, t.extra, t.tags) == ("7", 15, 3, True, {"a": 1}, ["x"])
+    bad = from_dict(Thing, {"when": 12345, "score": "high", "flag": 1, "extra": "no", "tags": "no"})
+    assert (bad.name, bad.when, bad.score, bad.flag, bad.extra, bad.tags) == ("", None, None, None, None, [])
+
+
+def test_alert_geometry_is_not_saved(config_dir: str) -> None:
+    """Polygons are large and only the radar overlay draws them; the next
+    refresh brings them back."""
+    from nws_weather_tui.persistence import load_app_state, save_app_state
+
+    saved = _fetched_app("ventura")
+    saved.alerts[0].geometry = {"type": "Polygon", "coordinates": [[[-119.3, 34.3], [-119.2, 34.3],
+                                                               [-119.2, 34.2], [-119.3, 34.3]]]}
+    save_app_state(saved)  # type: ignore[arg-type]
+    with open(os.path.join(config_dir, "state.json"), encoding="utf-8") as f:
+        assert "geometry" not in json.load(f)["alerts"][0]
+    loaded = _blank_app()
+    load_app_state(loaded)  # type: ignore[arg-type]
+    assert all(a.geometry is None for a in loaded.alerts)
