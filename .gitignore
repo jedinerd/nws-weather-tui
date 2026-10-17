@@ -16,3 +16,4 @@ env/
 .pytest_cache/
 .claude/settings.local.json
 tools/*
+uv.lock

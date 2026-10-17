@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import curses
 
-from nws_weather_tui.constants import N_RADAR_COLORS, NWS_RADAR_PALETTE, radar_curses_color, radar_dual_pair, radar_single_pair
+from nws_weather_tui.radar.palette import (
+    N_RADAR_COLORS,
+    NWS_RADAR_PALETTE,
+    radar_curses_color,
+    radar_dual_pair,
+    radar_single_pair,
+)
 from nws_weather_tui.helpers import dbg
 
 # Custom color 30 / pair 16 are unused by the radar palette (which occupies

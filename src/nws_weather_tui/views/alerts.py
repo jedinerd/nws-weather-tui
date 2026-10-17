@@ -123,8 +123,6 @@ def draw_alerts(app: "App", win) -> None:
     app.alert_line_scroll = clamp(
         app.alert_line_scroll, 0, max(0, total - max(1, view_rows))
     )
-    # Keep alert_scroll in sync for backwards compat
-    app.alert_scroll = app.alert_line_scroll
 
     y = 2
     for text, attr in all_lines[app.alert_line_scroll:]:

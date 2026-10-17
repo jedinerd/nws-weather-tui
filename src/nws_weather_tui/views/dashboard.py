@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import curses
 
 from nws_weather_tui.conversions import c_to_f, mps_to_mph
+from nws_weather_tui.favorites import is_here
 from nws_weather_tui.formatting import fmt_num
 from nws_weather_tui.geo import clamp
 from nws_weather_tui.helpers import fit_width, safe_addstr, text_width
@@ -22,21 +23,6 @@ from nws_weather_tui.icons import ICON_TINY
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
-
-# Favorites within this many degrees of the active location count as "here"
-# (~5 km), so a saved ZIP centroid still matches a nearby station pick.
-HERE_DEG = 0.05
-
-
-def _is_here(app: "App", fav: Dict[str, Any]) -> bool:
-    try:
-        return (
-            abs(float(fav.get("lat", 0)) - app.lat) < HERE_DEG
-            and abs(float(fav.get("lon", 0)) - app.lon) < HERE_DEG
-        )
-    except (TypeError, ValueError):
-        return False
-
 
 def _today(periods: List[Any]) -> Tuple[str, Optional[float]]:
     """('68°/48°', peak precip %) from the first day + night periods."""
@@ -162,7 +148,7 @@ def draw_dashboard(app: "App", win) -> None:
         if y >= rows - 2:
             break
         selected = i == app.dash_idx
-        here = _is_here(app, fav)
+        here = is_here(app, fav)
         any_here = any_here or here
         safe_addstr(win, y, 0, "▸" if selected else " ", curses.color_pair(2) | curses.A_BOLD)
         safe_addstr(win, y, 1, "*" if here else " ", curses.color_pair(1) | curses.A_BOLD)

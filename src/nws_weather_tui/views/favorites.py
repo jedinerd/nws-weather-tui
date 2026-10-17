@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 
 import curses
 
+from nws_weather_tui.favorites import is_here
 from nws_weather_tui.helpers import fit_width, safe_addstr, text_width
-from nws_weather_tui.views.dashboard import _is_here
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
@@ -42,7 +42,7 @@ def draw_favorites(app: "App", win) -> None:
             except (TypeError, ValueError):
                 coords = f"{'—':>9}  {'—':>10}"
             safe_addstr(win, y, 0, "▸" if selected else " ", curses.color_pair(2) | curses.A_BOLD)
-            if _is_here(app, fav):
+            if is_here(app, fav):
                 safe_addstr(win, y, 1, "*", curses.color_pair(1) | curses.A_BOLD)
             line = f"{i + 1:>3}  {fit_width(names[i], name_w)}  {coords}"
             attr = curses.color_pair(2) | curses.A_BOLD if selected else 0

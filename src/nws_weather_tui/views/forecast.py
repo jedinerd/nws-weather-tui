@@ -17,6 +17,7 @@ from nws_weather_tui.geo import clamp
 from nws_weather_tui.helpers import get_sunrise_sunset, safe_addstr, wrap_lines
 from nws_weather_tui.icons import ICON_BIG
 from nws_weather_tui.models import ForecastPeriod
+from nws_weather_tui.views.style import temp_attr
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
@@ -122,9 +123,7 @@ def _text_pad(w: int) -> int:
 
 
 def _card_attr_temp(v: Optional[float], unit: str) -> int:
-    """Colour a temperature by how warm it is (same scale as Hourly)."""
-    from nws_weather_tui.views.hourly import _temp_attr
-    return _temp_attr(v, unit.upper() != "C")
+    return temp_attr(v, unit.upper() != "C")
 
 
 def _card_lines(card: DayCard, w: int, app: "App") -> List[Tuple[str, int, bool]]:

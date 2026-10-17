@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
 NWS Weather TUI — Constants, config defaults, and paths.
-
-City data lives in ``radar/cities.py`` and the radar palette in
-``radar/palette.py``; they're re-exported here for backward compatibility.
 """
 
 from __future__ import annotations
@@ -16,16 +13,6 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 ZIP_RE = re.compile(r"^\d{5}(?:-\d{4})?$")
-
-# --- Re-exports from extracted modules ---
-from nws_weather_tui.radar.cities import MAJOR_CITIES  # noqa: F401
-from nws_weather_tui.radar.palette import (      # noqa: F401
-    N_RADAR_COLORS,
-    NWS_RADAR_PALETTE,
-    radar_curses_color,
-    radar_dual_pair,
-    radar_single_pair,
-)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -96,9 +83,7 @@ def load_json(path: str) -> Optional[Dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except FileNotFoundError:
-        return None
-    except Exception:
+    except Exception:  # missing, unreadable or not JSON: no saved state
         return None
 
 
@@ -119,8 +104,6 @@ def deep_merge(defaults: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = deep_merge(out[k], v)
-        elif isinstance(v, list) and isinstance(out.get(k), list):
-            out[k] = v
         else:
             out[k] = v
     return out

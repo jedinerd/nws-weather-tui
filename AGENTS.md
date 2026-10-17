@@ -68,9 +68,9 @@ pytest --update-snapshots   # after an intended rendering change; review the dif
 - Log debug info with `dbg()` helper for development
 
 #### Key Handlers
-`handle_key` in `input_handler.py` returns whatever the matched entry in its `key_handlers`
-dict returns, and the main loop quits on a falsy result. Every handler must return `True` to keep
-running or `False` to quit; one that falls through and returns `None` silently exits the app.
+`handle_key` in `input_handler.py` quits only when the matched handler returns `QUIT`; any
+other result, including none, keeps the app running. The favorites editor and dashboard
+handlers return a bool themselves: `True` to keep running, `QUIT` to quit.
 
 #### TUI/UI Guidelines
 - Use `_flash(message, duration)` for temporary status messages
@@ -105,7 +105,8 @@ All code lives under `src/nws_weather_tui/`:
   `overlays.py`, `cities.py`
 - `views/` - One module per screen (`current.py`, `forecast.py`, `hourly.py`, `alerts.py`,
   `afd.py`, `hwo.py`, `moon.py`, `radar.py`, `favorites.py`, `dashboard.py`, `help.py`),
-  `chrome.py` for header/footer; `__init__.py` re-exports the `draw_*` functions
+  `chrome.py` for header/footer, `style.py` for shared colour rules; `__init__.py`
+  re-exports the `draw_*` functions
 
 #### Git Conventions
 - Use conventional commit messages

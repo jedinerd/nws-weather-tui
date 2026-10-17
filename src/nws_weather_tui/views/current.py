@@ -19,6 +19,7 @@ from nws_weather_tui.helpers import safe_addstr, wrap_lines
 from nws_weather_tui.icons import ICON_BIG
 from nws_weather_tui.models import uv_category
 from nws_weather_tui.views.radar import draw_radar_panel
+from nws_weather_tui.views.style import temp_attr
 from nws_weather_tui.windsock import WINDSOCK_MAX_W, windsock_lines
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ def _draw_windsock(win, lines: List[str], x0: int, has_256color: bool) -> None:
         run_attr = None
 
         def flush(end_col: int) -> None:
-            nonlocal run_start, run_attr
+            nonlocal run_start
             if run_start is not None:
                 safe_addstr(win, row, x0 + run_start, line[run_start:end_col], run_attr)
                 run_start = None
@@ -221,9 +222,8 @@ def draw_current(app: "App", win) -> None:
     hum_str = f"{fmt_num(c.humidity_pct, 0)}%" if c.humidity_pct is not None else "\u2014"
 
     # --- Build the text block first, so the icon can be vertically centered against it ---
-    from nws_weather_tui.views.hourly import _temp_attr
-    temp_attr = _temp_attr(temp_val, app.units == "us") | curses.A_BOLD
-    text_lines: List[Tuple[str, int]] = [(line, temp_attr) for line in big_temp]
+    big_attr = temp_attr(temp_val, app.units == "us") | curses.A_BOLD
+    text_lines: List[Tuple[str, int]] = [(line, big_attr) for line in big_temp]
     text_lines += [
         ("", 0),
         (description, curses.A_BOLD),

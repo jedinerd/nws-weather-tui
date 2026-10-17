@@ -44,7 +44,7 @@ def test_vermin_python39() -> None:
     proc = subprocess.run(
         [vermin, "--target=3.9-", "--violations", "--eval-annotations", "--no-tips",
          "--no-parse-comments", "--backport", "typing", "--backport", "dataclasses",
-         "--backport", "argparse", "--backport", "faulthandler",
+         "--backport", "argparse",
          os.path.join(REPO_ROOT, "src"), os.path.join(REPO_ROOT, "tests")],
         capture_output=True, text=True, timeout=300,
     )

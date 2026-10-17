@@ -6,12 +6,41 @@ NWS Weather TUI — Favorites management and editor.
 from __future__ import annotations
 
 import curses
-from typing import TYPE_CHECKING
+from typing import Any, Dict, TYPE_CHECKING
 
 from nws_weather_tui.geo import clamp
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
+
+# Favorites within this many degrees of the active location count as "here"
+# (~5 km), so a saved ZIP centroid still matches a nearby station pick.
+HERE_DEG = 0.05
+
+
+def is_here(app: "App", fav: Dict[str, Any]) -> bool:
+    try:
+        return (
+            abs(float(fav.get("lat", 0)) - app.lat) < HERE_DEG
+            and abs(float(fav.get("lon", 0)) - app.lon) < HERE_DEG
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def jump_to_favorite(app: "App", fav: Dict[str, Any], announce: bool = False) -> bool:
+    """Switch to a favorite's location. False (with a flash) if its lat/lon
+    are missing or unusable."""
+    try:
+        name = str(fav.get("name") or "Favorite")
+        lat, lon = float(fav["lat"]), float(fav["lon"])
+    except (KeyError, TypeError, ValueError):
+        app._flash("Favorite is invalid (missing lat/lon).", 2.0)
+        return False
+    app._apply_location(name, lat, lon)
+    if announce:
+        app._flash(f"Jumped to: {fav.get('name', '—')}", 1.8)
+    return True
 
 
 def toggle_favorite(app: "App") -> bool:
@@ -43,21 +72,12 @@ def cycle_favorite(app: "App", direction: int) -> bool:
         app._flash("No favorites yet. Press F to add this location.", 2.0)
         return True
     app.fav_idx = (app.fav_idx + direction) % len(app.favorites)
-    f = app.favorites[app.fav_idx]
-    try:
-        app._apply_location(
-            str(f.get("name") or "Favorite"), float(f["lat"]), float(f["lon"])
-        )
-    except (KeyError, TypeError, ValueError):
-        app._flash("Favorite is invalid (missing lat/lon).", 2.0)
+    jump_to_favorite(app, app.favorites[app.fav_idx])
     return True
 
 
 def handle_favorites_key(app: "App", ch: int) -> bool:
-    if ch in (ord("e"), 27):  # e or Escape -> exit editor
-        app.view = "current"
-        return True
-    if ch in (ord("q"), ord("Q")):
+    if ch in (ord("e"), 27, ord("q"), ord("Q")):  # leave the editor
         app.view = "current"
         return True
     if ch in (curses.KEY_DOWN, ord("j")):
@@ -112,14 +132,13 @@ def _fav_edit_rename(app: "App") -> None:
 
 
 def _fav_edit_add(app: "App") -> None:
-    from nws_weather_tui.input_handler import prompt_line
+    from nws_weather_tui.input_handler import geocode_with_spinner, prompt_line
     q = prompt_line(app, "Add favorite (city/state or ZIP): ")
     if q is None or not q.strip():
         app._flash("Add canceled.", 1.2)
         return
     try:
-        app._show_loading("Searching location...")
-        g = app.client.geocode_us(q.strip())
+        g = geocode_with_spinner(app, q.strip())
         if not g:
             app._flash(f"No match found for '{q}'.", 2.5)
             return
@@ -149,12 +168,5 @@ def _fav_edit_reorder(app: "App", direction: int) -> None:
 def _fav_edit_select(app: "App") -> None:
     if not app.favorites:
         return
-    f = app.favorites[app.fav_edit_idx]
-    try:
-        app.view = "current"
-        app._apply_location(
-            str(f.get("name") or "Favorite"), float(f["lat"]), float(f["lon"])
-        )
-        app._flash(f"Jumped to: {f.get('name', '—')}", 1.8)
-    except (KeyError, TypeError, ValueError):
-        app._flash("Favorite is invalid (missing lat/lon).", 2.0)
+    app.view = "current"
+    jump_to_favorite(app, app.favorites[app.fav_edit_idx], announce=True)

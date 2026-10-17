@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from nws_weather_tui.api.cache import TTLCache
 from nws_weather_tui.helpers import dbg
@@ -225,7 +225,6 @@ class RadarFetcher:
                 )
                 url = base + "?" + params
                 try:
-                    from nws_weather_tui.api.cache import TTLCache as _  # noqa: F401
                     ck = url
                     cached = self.cache.get(ck)
                     if isinstance(cached, (bytes, bytearray)) and cached.startswith(

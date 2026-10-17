@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
 """
-NWS Weather TUI — Helper functions and utilities.
-
-Most functions have been extracted to dedicated modules.  This file
-keeps the residual helpers and re-exports everything that other modules
-still import via ``from helpers import …``.
+NWS Weather TUI — Astronomy, debug logging and curses text helpers.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import os
 import textwrap
 import unicodedata
 from functools import lru_cache
 from typing import List, Optional, Tuple
 
 from nws_weather_tui.constants import DEBUG_LOG_PATH, ensure_dir
-
-# --- Re-exports from extracted modules (backward compat) ---
-from nws_weather_tui.conversions import c_to_f, dewpoint_c, m_to_mi, mps_to_mph, pa_to_inhg  # noqa: F401
-from nws_weather_tui.formatting import fmt_num, fmt_time, parse_first_number, parse_iso      # noqa: F401
-from nws_weather_tui.geo import bbox_around, clamp, expand_bbox_km                           # noqa: F401
-from nws_weather_tui.radar.overlays import (                                                        # noqa: F401
-    city_overlay_and_hits_for_bbox,
-    png_to_line_overlay,
-    vector_lines_overlay,
-)
-from nws_weather_tui.radar.decode import RadarCell, png_to_ascii, png_to_halfblock_radar      # noqa: F401
 
 try:
     from astral import LocationInfo
@@ -75,7 +61,7 @@ def _sun_times(
 
 def dbg(msg: str) -> None:
     try:
-        ensure_dir(DEBUG_LOG_PATH.replace("debug.log", ""))
+        ensure_dir(os.path.dirname(DEBUG_LOG_PATH))
         ts = dt.datetime.now().astimezone().isoformat(timespec="seconds")
         with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(f"{ts} {msg}\n")

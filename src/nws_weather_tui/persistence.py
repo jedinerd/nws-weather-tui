@@ -67,7 +67,7 @@ def _fix_dt(obj: Any) -> Any:
     return obj
 
 
-def _build_state_dict(app: "App") -> Dict[str, Any]:
+def build_state_dict(app: "App") -> Dict[str, Any]:
     """Snapshot app state into a plain dict (safe to call on the main thread)."""
     return _fix_dt({
         "saved_at": dt.datetime.now().astimezone().isoformat(),
@@ -92,7 +92,7 @@ def _build_state_dict(app: "App") -> Dict[str, Any]:
 
 
 def save_app_state(app: "App") -> None:
-    save_json(STATE_PATH, _build_state_dict(app))
+    save_json(STATE_PATH, build_state_dict(app))
 
 
 def _parse_field(value: Any, field_name: str) -> Any:

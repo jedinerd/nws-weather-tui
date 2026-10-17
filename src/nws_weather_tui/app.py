@@ -35,7 +35,7 @@ from nws_weather_tui.models import (
     UVIndex,
 )
 from nws_weather_tui.notify import AlertNotifier
-from nws_weather_tui.persistence import load_app_state, save_app_config
+from nws_weather_tui.persistence import build_state_dict, load_app_state, save_app_config
 from nws_weather_tui.radar.decode import RadarCell
 from nws_weather_tui.radar.state import reset_radar_state
 from nws_weather_tui.views import (
@@ -151,7 +151,6 @@ class App:
         # --- Scroll positions ---
         self.fc_scroll: int = 0
         self.hr_scroll: int = 0
-        self.alert_scroll: int = 0
         self.alert_line_scroll: int = 0
         self.help_scroll: int = 0
         self.afd_scroll: int = 0
@@ -255,8 +254,7 @@ class App:
         save_app_config(self)
 
     def _save_state(self) -> None:
-        from nws_weather_tui.persistence import _build_state_dict
-        snapshot = _build_state_dict(self)
+        snapshot = build_state_dict(self)
         t = threading.Thread(
             target=self._write_state_bg, args=(snapshot,), daemon=False
         )

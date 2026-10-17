@@ -25,20 +25,15 @@ from nws_weather_tui.geo import clamp
 from nws_weather_tui.helpers import get_sunrise_sunset, safe_addstr
 from nws_weather_tui.icons import ICON_TINY
 from nws_weather_tui.models import HourlyPeriod
+from nws_weather_tui.views.style import (
+    C_BLUE, C_CYAN, C_GREEN, C_MAGENTA, C_RED, C_YELLOW, temp_attr,
+)
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
 
 KMH_PER_MPH = 1.609344
 MIN_POP = 10  # precip chances below this are noise; leave the cell blank
-
-# Colour pairs (see curses_init.py).
-C_CYAN = 1
-C_YELLOW = 2
-C_GREEN = 3
-C_RED = 4
-C_MAGENTA = 5
-C_BLUE = 6
 
 # A row in the scrollable table: ("day", date) | ("sun", (label, when)) |
 # ("hour", index into the hourly list).
@@ -469,21 +464,6 @@ def _draw_ribbon(win, y: int, cols: int, hrs: List[HourlyPeriod], app: "App") ->
 # Table
 # ---------------------------------------------------------------------------
 
-def _temp_attr(v: Optional[float], is_f: bool) -> int:
-    if v is None:
-        return curses.A_DIM
-    f = v if is_f else (c_to_f(v) or 0)
-    if f < 32:
-        return curses.color_pair(C_MAGENTA)
-    if f < 50:
-        return curses.color_pair(C_CYAN)
-    if f < 70:
-        return curses.color_pair(C_GREEN)
-    if f < 85:
-        return curses.color_pair(C_YELLOW)
-    return curses.color_pair(C_RED) | curses.A_BOLD
-
-
 def _dew_attr(v: Optional[float], is_f: bool) -> int:
     if v is None:
         return curses.A_DIM
@@ -745,7 +725,7 @@ def _day_summaries(
         fl = [_deg(h.apparent_c, is_f) for h in day if h.apparent_c is not None]
         if fl:
             lo, hi = min(fl), max(fl)
-            feels.append((f"feels {lo:.0f}°–{hi:.0f}°", _temp_attr(hi, is_f)))
+            feels.append((f"feels {lo:.0f}°–{hi:.0f}°", temp_attr(hi, is_f)))
         else:
             feels.append(("", 0))
         g = [_speed(h.gust_kmh, is_f) or 0 for h in day if h.gust_kmh is not None]
@@ -795,9 +775,9 @@ def _draw_grid(
             continue
         hi, lo = max(temps), min(temps)
         hi_s, lo_s = f"{hi:.0f}°", f"{lo:.0f}°"
-        safe_addstr(win, y + 1, x, hi_s, _temp_attr(hi, is_f))
+        safe_addstr(win, y + 1, x, hi_s, temp_attr(hi, is_f))
         safe_addstr(win, y + 1, x + len(hi_s), "/", curses.A_DIM)
-        safe_addstr(win, y + 1, x + len(hi_s) + 1, lo_s, _temp_attr(lo, is_f))
+        safe_addstr(win, y + 1, x + len(hi_s) + 1, lo_s, temp_attr(lo, is_f))
         peak = max((hrs[i].pop or 0 for i in by_hour.values()), default=0)
         px = x + len(hi_s) + 1 + len(lo_s) + 1
         if peak >= 15 and px + 4 <= x + w:
@@ -852,7 +832,7 @@ def _draw_grid_cell(
     safe_addstr(win, y, x + 1, icon[:2])
 
     temp = "—" if h.temperature is None else f"{h.temperature:.0f}°"
-    attr = _temp_attr(h.temperature, is_f) | (curses.A_BOLD if now else 0)
+    attr = temp_attr(h.temperature, is_f) | (curses.A_BOLD if now else 0)
     safe_addstr(win, y, x + 4, temp.rjust(4), attr)
 
     if h.pop and h.pop >= MIN_POP:
@@ -887,7 +867,7 @@ def _draw_hour_row(
     safe_addstr(win, y, xs["icon"] + 1, icon[:2])
 
     temp = "—" if h.temperature is None else f"{h.temperature:.0f}°"
-    safe_addstr(win, y, xs["temp"], temp.rjust(6), _temp_attr(h.temperature, is_f))
+    safe_addstr(win, y, xs["temp"], temp.rjust(6), temp_attr(h.temperature, is_f))
 
     if "feels" in xs:
         feels = _deg(h.apparent_c, is_f)
@@ -897,7 +877,7 @@ def _draw_hour_row(
             pass  # same as the air temperature — leave blank
         else:
             safe_addstr(win, y, xs["feels"], f"{feels:.0f}°".rjust(6),
-                        _temp_attr(feels, is_f))
+                        temp_attr(feels, is_f))
 
     if "dew" in xs:
         dew = _deg(h.dewpoint_c, is_f)

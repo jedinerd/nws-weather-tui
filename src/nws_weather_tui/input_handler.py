@@ -5,33 +5,58 @@ NWS Weather TUI — Key dispatch, mouse handling, input prompts.
 
 from __future__ import annotations
 
+import re
 import threading
 import webbrowser
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 import curses
 
-from nws_weather_tui.favorites import cycle_favorite, handle_favorites_key, toggle_favorite
+from nws_weather_tui.favorites import (
+    cycle_favorite,
+    handle_favorites_key,
+    jump_to_favorite,
+    toggle_favorite,
+)
 from nws_weather_tui.geo import clamp
 from nws_weather_tui.helpers import safe_addstr
 
 if TYPE_CHECKING:
     from nws_weather_tui.app import App
 
+# A handler quits the app by returning QUIT; anything else (including no
+# return value at all) keeps it running.
+QUIT = False
+
+# The App attribute holding each scrolling view's position.
+_SCROLL_ATTR: Dict[str, str] = {
+    "forecast": "fc_scroll",
+    "alerts": "alert_line_scroll",
+    "hourly": "hr_scroll",
+    "help": "help_scroll",
+    "afd": "afd_scroll",
+    "hwo": "hwo_scroll",
+}
+# Past any view's end; each view clamps to its own length when it draws.
+_SCROLL_END = 9999
+
+_LAT_LON_RE = re.compile(r"^\s*([+-]?\d+\.?\d*)\s*[,\s]\s*([+-]?\d+\.?\d*)\s*$")
+
 
 def handle_key(app: "App", ch: int) -> bool:
+    """Dispatch one key; False means quit."""
     if app.view == "favorites":
         return handle_favorites_key(app, ch)
     if app.view == "dashboard":
         return handle_dashboard_key(app, ch)
     if ch == curses.KEY_RESIZE:
         rows, cols = app.stdscr.getmaxyx()
-        app._flash(f"Resized to {cols}\u00d7{rows}", 1.5)
+        app._flash(f"Resized to {cols}×{rows}", 1.5)
         return True
 
-    key_handlers = {
-        ord("q"): lambda: False,
-        ord("Q"): lambda: False,
+    key_handlers: Dict[int, Callable[[], object]] = {
+        ord("q"): lambda: QUIT,
+        ord("Q"): lambda: QUIT,
         ord("?"): lambda: _toggle_help(app),
         curses.KEY_MOUSE: lambda: _handle_mouse_event(app),
         ord("c"): lambda: _set_view(app, "current"),
@@ -53,35 +78,32 @@ def handle_key(app: "App", ch: int) -> bool:
         ord("n"): lambda: cycle_favorite(app, 1),
         ord("b"): lambda: cycle_favorite(app, -1),
         ord("F"): lambda: toggle_favorite(app),
+        ord("G"): lambda: scroll_to_end(app),
+        27: lambda: _set_view(app, "current"),  # Escape
+        curses.KEY_NPAGE: lambda: scroll(app, 10),
+        curses.KEY_PPAGE: lambda: scroll(app, -10),
     }
     handler = key_handlers.get(ch)
     if handler:
-        return handler()  # type: ignore[return-value]
+        return handler() is not QUIT
     if ch in (curses.KEY_DOWN, ord("j")):
         scroll(app, 1)
     elif ch in (curses.KEY_UP, ord("k")):
         scroll(app, -1)
     elif ch in (curses.KEY_LEFT, ord("<")):
-        if app.view == "forecast":
-            scroll(app, -1)
-        elif app.view == "current":
-            from nws_weather_tui.radar.state import step_radar_frame
-            step_radar_frame(app, -1)
+        _sideways(app, -1)
     elif ch in (curses.KEY_RIGHT, ord(">")):
-        if app.view == "forecast":
-            scroll(app, 1)
-        elif app.view == "current":
-            from nws_weather_tui.radar.state import step_radar_frame
-            step_radar_frame(app, 1)
-    elif ch == 27:  # Escape
-        app.view = "current"
-    elif ch == ord("G"):
-        _jump_scroll(app, "bottom")
-    elif ch == curses.KEY_NPAGE:
-        scroll(app, 10)
-    elif ch == curses.KEY_PPAGE:
-        scroll(app, -10)
+        _sideways(app, 1)
     return True
+
+
+def _sideways(app: "App", direction: int) -> None:
+    """Left/right: scroll the forecast's day columns, or step a radar frame."""
+    if app.view == "forecast":
+        scroll(app, direction)
+    elif app.view == "current":
+        from nws_weather_tui.radar.state import step_radar_frame
+        step_radar_frame(app, direction)
 
 
 def handle_mouse(app: "App", mx: int, my: int, bstate: int) -> None:
@@ -142,8 +164,7 @@ def prompt_line(app: "App", prompt: str, max_len: int = 96) -> Optional[str]:
 
 def _parse_lat_lon(text: str) -> Optional[Tuple[float, float]]:
     """Try to parse 'lat,lon' or 'lat lon' from text. Returns (lat, lon) or None."""
-    import re
-    m = re.match(r"^\s*([+-]?\d+\.?\d*)\s*[,\s]\s*([+-]?\d+\.?\d*)\s*$", text)
+    m = _LAT_LON_RE.match(text)
     if not m:
         return None
     lat, lon = float(m.group(1)), float(m.group(2))
@@ -152,7 +173,7 @@ def _parse_lat_lon(text: str) -> Optional[Tuple[float, float]]:
     return None
 
 
-def _geocode_with_spinner(app: "App", query: str) -> Optional[tuple]:
+def geocode_with_spinner(app: "App", query: str) -> Optional[Tuple[str, float, float]]:
     """Run geocode_us() on a background thread so the UI stays responsive
     (spinner keeps animating, terminal stays repaintable) instead of
     freezing on the main thread for the duration of the HTTP request."""
@@ -181,129 +202,110 @@ def _geocode_with_spinner(app: "App", query: str) -> Optional[tuple]:
     return result.get("value")
 
 
+def _confirm_location(app: "App", name: str, lat: float, lon: float) -> None:
+    """Ask before switching: a search can land somewhere unexpected."""
+    confirm = prompt_line(app, f"Apply '{name}'? (y/n): ", max_len=3)
+    if confirm and confirm.lower().startswith("y"):
+        app._apply_location(name, lat, lon)
+        app._flash(f"Location set: {name}", 1.8)
+    else:
+        app._flash("Location search canceled.", 1.4)
+
+
 def search_location(app: "App") -> bool:
     q = prompt_line(app, "Location (city/state, ZIP, or lat,lon): ")
     if q is None or not q.strip():
         app._flash("Location search canceled.", 1.4)
         return True
+    q = q.strip()
     try:
-        coords = _parse_lat_lon(q.strip())
+        coords = _parse_lat_lon(q)
         if coords:
             lat, lon = coords
-            name = f"{lat:.4f}, {lon:.4f}"
-            confirm = prompt_line(app, f"Apply '{name}'? (y/n): ", max_len=3)
-            if confirm and confirm.lower().startswith("y"):
-                app._apply_location(name, lat, lon)
-                app._flash(f"Location set: {name}", 1.8)
-            else:
-                app._flash("Location search canceled.", 1.4)
+            _confirm_location(app, f"{lat:.4f}, {lon:.4f}", lat, lon)
             return True
-        g = _geocode_with_spinner(app, q.strip())
+        g = geocode_with_spinner(app, q)
         if not g:
             app._flash(f"No match found for '{q}'.", 2.5)
             return True
-        name, lat, lon = g
-        confirm = prompt_line(app, f"Apply '{name}'? (y/n): ", max_len=3)
-        if confirm and confirm.lower().startswith("y"):
-            app._apply_location(name, lat, lon)
-            app._flash(f"Location set: {name}", 1.8)
-        else:
-            app._flash("Location search canceled.", 1.4)
+        _confirm_location(app, *g)
     except Exception as e:
         app._flash(f"Location search failed: {e}", 3.5)
     return True
 
 
-def _set_view(app: "App", view: str) -> bool:
+def _set_view(app: "App", view: str) -> None:
     app.view = view
-    return True
 
 
-def _toggle_help(app: "App") -> bool:
+def _toggle_help(app: "App") -> None:
     app.view = "current" if app.view == "help" else "help"
-    return True
 
 
-def _handle_mouse_event(app: "App") -> bool:
+def _handle_mouse_event(app: "App") -> None:
     try:
         _id, mx, my, _z, bstate = curses.getmouse()
         handle_mouse(app, mx, my, bstate)
     except Exception:
         pass
-    return True
 
 
-def _do_refresh(app: "App") -> bool:
+def _do_refresh(app: "App") -> None:
     app._radar_last = 0.0
     from nws_weather_tui.weather_refresh import refresh_all
     refresh_all(app, force=True, allow_offline=True)
-    return True
 
 
-def _toggle_units(app: "App") -> bool:
+def _toggle_units(app: "App") -> None:
     app.units = "si" if app.units == "us" else "us"
     app.client.cache.clear()
     from nws_weather_tui.weather_refresh import refresh_all
     refresh_all(app, force=True, allow_offline=True)
     app._save_cfg()
-    return True
 
 
-def _toggle_time_format(app: "App") -> bool:
+def _toggle_time_format(app: "App") -> None:
     app.use_24h = not app.use_24h
     app._flash("Toggled time format.", 1.2)
     app._save_cfg()
-    return True
 
 
-def _toggle_pause(app: "App") -> bool:
+def _toggle_pause(app: "App") -> None:
     app.paused = not app.paused
     app._flash("Paused." if app.paused else "Resumed.", 1.2)
-    return True
 
 
-def _toggle_radar_anim(app: "App") -> bool:
+def _toggle_radar_anim(app: "App") -> None:
     from nws_weather_tui.radar.state import toggle_radar_anim
-    return toggle_radar_anim(app)
+    toggle_radar_anim(app)
 
 
-def _open_radar_browser(app: "App") -> bool:
+def _open_radar_browser(app: "App") -> None:
     url = "https://radar.weather.gov/"
     try:
         webbrowser.open(url)
     except Exception:
         pass
     app._flash(f"Opened {url}", 3.0)
-    return True
 
 
-def _jump_scroll(app: "App", position: str) -> None:
-    if position == "top":
-        if app.view == "forecast":
-            app.fc_scroll = 0
-        elif app.view == "alerts":
-            app.alert_line_scroll = 0
-        elif app.view == "hourly":
-            app.hr_scroll = 0
-        elif app.view == "help":
-            app.help_scroll = 0
-        elif app.view == "afd":
-            app.afd_scroll = 0
-        elif app.view == "hwo":
-            app.hwo_scroll = 0
-    elif position == "bottom":
-        if app.view == "forecast":
-            app.fc_scroll = max(0, len(app.forecast_periods) - 1)
-        elif app.view == "alerts":
-            app.alert_line_scroll = 9999
-        elif app.view == "hourly":
-            app.hr_scroll = max(0, len(app.hourly_periods) - 1)
-        elif app.view == "help":
-            app.help_scroll = 9999
-        elif app.view == "afd":
-            app.afd_scroll = 9999
-        elif app.view == "hwo":
-            app.hwo_scroll = 9999
+def scroll(app: "App", direction: int) -> None:
+    attr = _SCROLL_ATTR.get(app.view)
+    if attr:
+        setattr(app, attr, max(0, getattr(app, attr) + direction))
+
+
+def scroll_to_end(app: "App") -> None:
+    attr = _SCROLL_ATTR.get(app.view)
+    if not attr:
+        return
+    if app.view == "forecast":
+        end = max(0, len(app.forecast_periods) - 1)
+    elif app.view == "hourly":
+        end = max(0, len(app.hourly_periods) - 1)
+    else:
+        end = _SCROLL_END
+    setattr(app, attr, end)
 
 
 def handle_dashboard_key(app: "App", ch: int) -> bool:
@@ -311,7 +313,7 @@ def handle_dashboard_key(app: "App", ch: int) -> bool:
         app.view = "current"
         return True
     if ch in (ord("q"), ord("Q")):
-        return False
+        return QUIT
     if not app.favorites:
         return True
     if ch in (curses.KEY_DOWN, ord("j")):
@@ -323,28 +325,6 @@ def handle_dashboard_key(app: "App", ch: int) -> bool:
         refresh_dashboard(app, force=True)
         app._flash("Refreshing dashboard...", 1.2)
     elif ch in (curses.KEY_ENTER, 10, 13):
-        f = app.favorites[app.dash_idx]
-        try:
-            app.view = "current"
-            app._apply_location(
-                str(f.get("name") or "Favorite"), float(f["lat"]), float(f["lon"])
-            )
-            app._flash(f"Jumped to: {f.get('name', '—')}", 1.8)
-        except (KeyError, TypeError, ValueError):
-            app._flash("Favorite is invalid (missing lat/lon).", 2.0)
+        app.view = "current"
+        jump_to_favorite(app, app.favorites[app.dash_idx], announce=True)
     return True
-
-
-def scroll(app: "App", direction: int) -> None:
-    if app.view == "forecast":
-        app.fc_scroll += direction
-    elif app.view == "alerts":
-        app.alert_line_scroll = max(0, app.alert_line_scroll + direction)
-    elif app.view == "hourly":
-        app.hr_scroll += direction
-    elif app.view == "help":
-        app.help_scroll = max(0, app.help_scroll + direction)
-    elif app.view == "afd":
-        app.afd_scroll = max(0, app.afd_scroll + direction)
-    elif app.view == "hwo":
-        app.hwo_scroll = max(0, app.hwo_scroll + direction)
