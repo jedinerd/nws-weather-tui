@@ -101,7 +101,8 @@ All code lives under `src/nws_weather_tui/`:
 - `moon.py`, `windsock.py`, `icons.py`, `curses_init.py` - Moon math, windsock, icons, curses setup
 - `api/` - HTTP clients: `client.py` (NWS), `geocode.py`, `geo_boundaries.py`,
   `air_quality.py`, `uv_index.py`, `cache.py` (TTL cache) and `fixtures.py` (FIXTURE record/replay)
-- `radar/` - `client.py`, `decode.py`, `renderer.py`, `palette.py`, `state.py`,
+- `radar/` - `client.py`, `decode.py`, `renderer.py`, `palette.py`, `state.py` (the
+  `RadarState` dataclass held as `App.radar`, plus the background fetch),
   `overlays.py`, `cities.py`
 - `views/` - One module per screen (`current.py`, `forecast.py`, `hourly.py`, `alerts.py`,
   `afd.py`, `hwo.py`, `moon.py`, `radar.py`, `favorites.py`, `dashboard.py`, `help.py`),

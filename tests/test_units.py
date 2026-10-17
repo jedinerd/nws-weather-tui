@@ -289,22 +289,25 @@ class _RadarApp:
     """The attributes maybe_refresh_radar reads."""
 
     def __init__(self) -> None:
+        from nws_weather_tui.radar.state import RadarState
+
         self.show_radar_map = True
+        self.radar = RadarState()
         self._bg_radar_running = False
         self.cfg = {"cache_ttls": {"radar": 300}}
-        self._radar_last = time.time()
-        self._radar_cells: List[Any] = []
-        self._radar_ascii: List[str] = []
-        self._radar_src_cols, self._radar_src_rows = 80, 20
-        self._radar_bbox_state = "CO"
+        self.radar.last = time.time()
+        self.radar.cells: List[Any] = []
+        self.radar.ascii_lines: List[str] = []
+        self.radar.src_cols, self.radar.src_rows = 80, 20
+        self.radar.bbox_state = "CO"
         self.state_code = "CO"
-        self._radar_err: Optional[str] = "all radar sources failed"
+        self.radar.err: Optional[str] = "all radar sources failed"
         # What starting a fetch reads.
         self.lat, self.lon = 39.74, -104.99
         self.radar_station = "KFTG"
         self.alerts: List[Any] = []
-        self._radar_has_256color = True
-        self._radar_anim_playing = False
+        self.radar.has_256color = True
+        self.radar.anim_playing = False
         self._bg_generation = 0
         self.client = type("C", (), {"state_bbox": lambda _s, _c: (-109.1, 37.0, -102.0, 41.0)})()
         # What a finished fetch (apply_bg_radar) writes.
@@ -313,16 +316,16 @@ class _RadarApp:
         self._bg_weather_running = False
         self._is_loading = False
         self.status_msg, self.status_until = "", 0.0
-        self._radar_bbox: Optional[Any] = None
-        self._radar_frames: List[Any] = []
-        self._radar_frame_idx = 0
-        self._radar_kind: List[str] = []
-        self._radar_ts_ms, self._radar_ts_utc = 0, ""
-        self._radar_state_overlay: List[str] = []
-        self._radar_city_overlay: List[str] = []
-        self._radar_alert_overlay: List[str] = []
-        self._radar_city_hitmap: Dict[Any, Any] = {}
-        self._radar_progress = (0, 0)
+        self.radar.bbox: Optional[Any] = None
+        self.radar.frames: List[Any] = []
+        self.radar.frame_idx = 0
+        self.radar.kind_lines: List[str] = []
+        self.radar.ts_ms, self.radar.ts_utc = 0, ""
+        self.radar.state_overlay: List[str] = []
+        self.radar.city_overlay: List[str] = []
+        self.radar.alert_overlay: List[str] = []
+        self.radar.city_hitmap: Dict[Any, Any] = {}
+        self.radar.progress = (0, 0)
         self.flashed: List[str] = []
 
     def _flash(self, msg: str, seconds: float = 2.0) -> None:
@@ -371,10 +374,10 @@ def _fresh_radar_app(client: Any) -> _RadarApp:
     """An app that has never fetched radar for its current location."""
     app = _RadarApp()
     app.client = client
-    app._radar_err = None
-    app._radar_last = 0.0
-    app._radar_src_cols = app._radar_src_rows = 0
-    app._radar_bbox_state = None
+    app.radar.err = None
+    app.radar.last = 0.0
+    app.radar.src_cols = app.radar.src_rows = 0
+    app.radar.bbox_state = None
     app.cfg["radar"] = {"show_state_lines": False, "show_city_labels": False,
                         "show_alert_polygons": False, "animation_frames": 1}
     return app
@@ -394,7 +397,7 @@ def test_radar_bbox_lookup_runs_on_the_worker(monkeypatch: Any) -> None:
     state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     assert app._bg_radar_running and len(workers) == 1
     assert client.bbox_calls == []  # nothing fetched on the calling thread
-    assert app._radar_bbox is None and app._radar_src_cols == 0
+    assert app.radar.bbox is None and app.radar.src_cols == 0
 
     workers[0]()  # the worker: bbox lookup, fit to the panel, frames
     assert client.bbox_calls == ["CO"]
@@ -404,10 +407,10 @@ def test_radar_bbox_lookup_runs_on_the_worker(monkeypatch: Any) -> None:
     assert client.requests == [("KFTG", expected, req_w, req_h)]
 
     state.apply_bg_radar(app)  # type: ignore[arg-type]
-    assert not app._bg_radar_running and app._radar_err is None
-    assert app._radar_bbox == expected and app._radar_bbox_state == "CO"
-    assert (app._radar_src_cols, app._radar_src_rows) == (80, 20)
-    assert len(app._radar_frames) == 1 and app._radar_cells
+    assert not app._bg_radar_running and app.radar.err is None
+    assert app.radar.bbox == expected and app.radar.bbox_state == "CO"
+    assert (app.radar.src_cols, app.radar.src_rows) == (80, 20)
+    assert len(app.radar.frames) == 1 and app.radar.cells
     state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     assert len(workers) == 1  # same view, fresh frames: nothing to do
 
@@ -422,13 +425,13 @@ def test_failed_background_fetch_still_backs_off(monkeypatch: Any) -> None:
     state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     workers[0]()
     state.apply_bg_radar(app)  # type: ignore[arg-type]
-    assert app._radar_err == "all radar sources failed" and app._radar_frames == []
-    assert app._radar_bbox_state == "CO" and (app._radar_src_cols, app._radar_src_rows) == (80, 20)
+    assert app.radar.err == "all radar sources failed" and app.radar.frames == []
+    assert app.radar.bbox_state == "CO" and (app.radar.src_cols, app.radar.src_rows) == (80, 20)
 
     for _ in range(5):
         state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     assert len(workers) == 1
-    app._radar_last -= state.RADAR_RETRY_S + 1
+    app.radar.last -= state.RADAR_RETRY_S + 1
     state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     assert len(workers) == 2
 
@@ -461,7 +464,7 @@ def test_failed_radar_fetch_backs_off(monkeypatch: Any) -> None:
     for _ in range(5):  # five redraws in quick succession
         state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     assert started == []
-    app._radar_last -= state.RADAR_RETRY_S + 1
+    app.radar.last -= state.RADAR_RETRY_S + 1
     state.maybe_refresh_radar(app, 80, 20)  # type: ignore[arg-type]
     assert started == [1] and app._bg_radar_running
 

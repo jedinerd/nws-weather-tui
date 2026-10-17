@@ -10,12 +10,14 @@ import math
 import os
 import threading
 import time
-from typing import Any, Dict, List, Tuple, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from nws_weather_tui.constants import RADAR_LAST_PNG_PATH, ensure_dir
 from nws_weather_tui.geo import bbox_around, clamp, expand_bbox_km
 from nws_weather_tui.helpers import dbg
 from nws_weather_tui.models import RadarFrame
+from nws_weather_tui.radar.decode import RadarCell
 from nws_weather_tui.radar.overlays import (
     city_overlay_and_hits_for_bbox,
     png_to_line_overlay,
@@ -28,42 +30,64 @@ if TYPE_CHECKING:
     from nws_weather_tui.app import App
 
 
+@dataclass
+class RadarState:
+    """Everything the radar panel shows and the bookkeeping of the fetch
+    that feeds it. One per App; reset on a location change."""
+
+    # Decoded animation frames and the one on screen.
+    frames: List[RadarFrame] = field(default_factory=list)
+    frame_idx: int = 0
+    anim_playing: bool = False
+    anim_last: float = 0.0
+    anim_interval: float = 0.5
+    cells: List[List[RadarCell]] = field(default_factory=list)
+    ascii_lines: List[str] = field(default_factory=list)
+    kind_lines: List[str] = field(default_factory=list)
+    ts_ms: int = 0
+    ts_utc: str = ""
+    # Overlays drawn over the frame, and where the city labels are for clicks.
+    state_overlay: List[str] = field(default_factory=list)
+    city_overlay: List[str] = field(default_factory=list)
+    alert_overlay: List[str] = field(default_factory=list)
+    city_hitmap: Dict[Tuple[int, int], Tuple[str, float, float]] = field(default_factory=dict)
+    # The last fetch: when, for which view, and how it went.
+    last: float = 0.0
+    err: Optional[str] = None
+    bbox: Optional[Tuple[float, float, float, float]] = None
+    bbox_state: Optional[str] = None  # state code the bbox was built for (None = radius fallback)
+    src_cols: int = 0
+    src_rows: int = 0
+    progress: Tuple[int, int] = (0, 0)
+    # Where the map was last drawn on the screen, for mouse hits.
+    map_x: int = 0
+    map_y: int = 0
+    map_cols: int = 0
+    map_rows: int = 0
+    has_256color: bool = False
+
+    def reset(self) -> None:
+        """Forget the frames, overlays and fetch for the old location; the
+        configured interval and the terminal's colour support stay."""
+        fresh = RadarState(anim_interval=self.anim_interval, has_256color=self.has_256color)
+        self.__dict__.update(fresh.__dict__)
+
+
 def reset_radar_state(app: "App") -> None:
-    app._radar_frames = []
-    app._radar_frame_idx = 0
-    app._radar_anim_playing = False
-    app._radar_cells = []
-    app._radar_ascii = []
-    app._radar_kind = []
-    app._radar_ts_ms = 0
-    app._radar_ts_utc = ""
-    app._radar_state_overlay = []
-    app._radar_city_overlay = []
-    app._radar_alert_overlay = []
-    app._radar_city_hitmap = {}
-    app._radar_err = None
-    app._radar_last = 0.0
-    app._radar_src_cols = 0
-    app._radar_src_rows = 0
-    app._radar_bbox_state = None
-    app._radar_map_x = 0
-    app._radar_map_y = 0
-    app._radar_map_cols = 0
-    app._radar_map_rows = 0
-    app._radar_progress = (0, 0)
+    app.radar.reset()
 
 
 def set_current_radar_frame(app: "App") -> None:
     """Copy data from the current animation frame index to display state."""
-    if not app._radar_frames:
+    if not app.radar.frames:
         return
-    idx = clamp(app._radar_frame_idx, 0, len(app._radar_frames) - 1)
-    f = app._radar_frames[idx]
-    app._radar_cells = f.cells
-    app._radar_ascii = f.ascii_lines
-    app._radar_kind = f.kind_lines
-    app._radar_ts_ms = f.timestamp_ms
-    app._radar_ts_utc = ts_ms_to_utc_str(f.timestamp_ms)
+    idx = clamp(app.radar.frame_idx, 0, len(app.radar.frames) - 1)
+    f = app.radar.frames[idx]
+    app.radar.cells = f.cells
+    app.radar.ascii_lines = f.ascii_lines
+    app.radar.kind_lines = f.kind_lines
+    app.radar.ts_ms = f.timestamp_ms
+    app.radar.ts_utc = ts_ms_to_utc_str(f.timestamp_ms)
 
 
 def ts_ms_to_utc_str(ts_ms: int) -> str:
@@ -88,14 +112,14 @@ def save_radar_png(png: bytes) -> None:
 
 
 def toggle_radar_anim(app: "App") -> bool:
-    if len(app._radar_frames) < 2:
+    if len(app.radar.frames) < 2:
         app._flash("Animation requires ≥2 frames. Try refreshing (r).", 2.5)
         return True
-    app._radar_anim_playing = not app._radar_anim_playing
-    if app._radar_anim_playing:
-        app._radar_anim_last = time.time()
+    app.radar.anim_playing = not app.radar.anim_playing
+    if app.radar.anim_playing:
+        app.radar.anim_last = time.time()
         app._flash(
-            f"Animation ON  ({len(app._radar_frames)} frames)", 1.5
+            f"Animation ON  ({len(app.radar.frames)} frames)", 1.5
         )
     else:
         app._flash("Animation OFF", 1.2)
@@ -103,12 +127,12 @@ def toggle_radar_anim(app: "App") -> bool:
 
 
 def step_radar_frame(app: "App", direction: int) -> bool:
-    if not app._radar_frames:
+    if not app.radar.frames:
         return True
-    n = len(app._radar_frames)
-    app._radar_frame_idx = (app._radar_frame_idx + direction) % n
+    n = len(app.radar.frames)
+    app.radar.frame_idx = (app.radar.frame_idx + direction) % n
     set_current_radar_frame(app)
-    app._radar_anim_playing = False
+    app.radar.anim_playing = False
     return True
 
 
@@ -121,30 +145,30 @@ def maybe_refresh_radar(app: "App", target_cols: int, target_rows: int) -> None:
     if app._bg_radar_running:
         return
     ttl = int(app.cfg.get("cache_ttls", {}).get("radar", 300))
-    age = time.time() - app._radar_last
+    age = time.time() - app.radar.last
     same_view = (
-        app._radar_src_cols == target_cols
-        and app._radar_src_rows == target_rows
+        app.radar.src_cols == target_cols
+        and app.radar.src_rows == target_rows
         # The first fetch can happen before the weather load sets state_code,
         # leaving a radius view around the user; rebuild once the state is known.
-        and app._radar_bbox_state == app.state_code
+        and app.radar.bbox_state == app.state_code
     )
-    if same_view and age < ttl and (app._radar_cells or app._radar_ascii):
+    if same_view and age < ttl and (app.radar.cells or app.radar.ascii_lines):
         return
     # A failed fetch leaves no frames; without this every redraw (several a
     # second) would start another full round of requests to every source.
-    if same_view and app._radar_err and age < RADAR_RETRY_S:
+    if same_view and app.radar.err and age < RADAR_RETRY_S:
         return
 
     try:
         from PIL import Image as _PIL_Image  # noqa: F401
     except ImportError:
-        app._radar_ascii = ["(install pillow to render radar map)"]
-        app._radar_kind = []
-        app._radar_state_overlay = []
-        app._radar_city_hitmap = {}
-        app._radar_err = "pillow missing"
-        app._radar_last = time.time()
+        app.radar.ascii_lines = ["(install pillow to render radar map)"]
+        app.radar.kind_lines = []
+        app.radar.state_overlay = []
+        app.radar.city_hitmap = {}
+        app.radar.err = "pillow missing"
+        app.radar.last = time.time()
         return
 
     radar_cfg = dict(app.cfg.get("radar", {}) or {})
@@ -159,7 +183,7 @@ def maybe_refresh_radar(app: "App", target_cols: int, target_rows: int) -> None:
     # The state bbox lookup can make several HTTP requests (and the cache is
     # cleared on every location change), so it happens on the worker thread;
     # _radar_bbox/_radar_src_* are stored by apply_bg_radar from the result.
-    app._radar_last = time.time()
+    app.radar.last = time.time()
     app._bg_radar_running = True
     app._is_loading = True
     app.status_msg = "/ Loading radar..."
@@ -168,7 +192,7 @@ def maybe_refresh_radar(app: "App", target_cols: int, target_rows: int) -> None:
     ctx = {
         "radar_station": app.radar_station or "",
         "target_cols": target_cols, "target_rows": target_rows,
-        "has_256color": app._radar_has_256color,
+        "has_256color": app.radar.has_256color,
         "ramp": ramp,
         "show_state_lines": show_state_lines,
         "show_city_labels": show_city_labels,
@@ -181,7 +205,7 @@ def maybe_refresh_radar(app: "App", target_cols: int, target_rows: int) -> None:
         "n_frames": n_frames, "step_min": step_min,
         "lat": app.lat, "lon": app.lon,
         "state_code": app.state_code,
-        "anim_playing": app._radar_anim_playing,
+        "anim_playing": app.radar.anim_playing,
     }
     threading.Thread(
         target=_bg_radar_fetch, args=(app, ctx, app._bg_generation), daemon=True
@@ -220,7 +244,7 @@ def _bg_radar_fetch(app: "App", ctx: Dict[str, Any], gen: int) -> None:
         "target_cols": ctx["target_cols"], "target_rows": ctx["target_rows"],
         "state_code": ctx["state_code"],
     }
-    app._radar_progress = (0, ctx["n_frames"])
+    app.radar.progress = (0, ctx["n_frames"])
     try:
         state_code = ctx["state_code"]
         bbox = app.client.state_bbox(state_code) if state_code else None
@@ -239,7 +263,7 @@ def _bg_radar_fetch(app: "App", ctx: Dict[str, Any], gen: int) -> None:
             ctx["radar_station"], ctx["bbox"],
             ctx["req_w"], ctx["req_h"],
             n_frames=ctx["n_frames"], step_minutes=ctx["step_min"],
-            progress_cb=lambda done, total: setattr(app, "_radar_progress", (done, total)),
+            progress_cb=lambda done, total: setattr(app.radar, "progress", (done, total)),
         )
         if not raw_frames:
             raise RuntimeError("radar returned no frames")
@@ -351,34 +375,34 @@ def apply_bg_radar(app: "App") -> None:
         return
     app._bg_radar_running = False
     app._is_loading = app._bg_weather_running
-    app._radar_last = time.time()
+    app.radar.last = time.time()
     # The view this result was fetched for (success or not); the next draw
     # compares against it to decide whether to fetch again.
     if result.get("bbox"):
-        app._radar_bbox = result["bbox"]
-    app._radar_bbox_state = result.get("state_code")
-    app._radar_src_cols = int(result.get("target_cols", 0))
-    app._radar_src_rows = int(result.get("target_rows", 0))
+        app.radar.bbox = result["bbox"]
+    app.radar.bbox_state = result.get("state_code")
+    app.radar.src_cols = int(result.get("target_cols", 0))
+    app.radar.src_rows = int(result.get("target_rows", 0))
 
     if result.get("ok"):
         frames = result["frames"]
-        app._radar_frames = frames
+        app.radar.frames = frames
         if not result.get("anim_playing"):
-            app._radar_frame_idx = len(frames) - 1
+            app.radar.frame_idx = len(frames) - 1
         set_current_radar_frame(app)
-        app._radar_state_overlay = result.get("state_overlay", [])
-        app._radar_city_overlay = result.get("city_overlay", [])
-        app._radar_alert_overlay = result.get("alert_overlay", [])
-        app._radar_city_hitmap = result.get("city_hitmap", {})
-        app._radar_err = None
+        app.radar.state_overlay = result.get("state_overlay", [])
+        app.radar.city_overlay = result.get("city_overlay", [])
+        app.radar.alert_overlay = result.get("alert_overlay", [])
+        app.radar.city_hitmap = result.get("city_hitmap", {})
+        app.radar.err = None
         if not app._bg_weather_running:
             app._flash("Radar updated.", 1.1)
     else:
-        app._radar_cells = []
-        app._radar_ascii = []
-        app._radar_kind = []
-        app._radar_state_overlay = []
-        app._radar_city_overlay = []
-        app._radar_alert_overlay = []
-        app._radar_city_hitmap = {}
-        app._radar_err = result.get("error", "unknown")
+        app.radar.cells = []
+        app.radar.ascii_lines = []
+        app.radar.kind_lines = []
+        app.radar.state_overlay = []
+        app.radar.city_overlay = []
+        app.radar.alert_overlay = []
+        app.radar.city_hitmap = {}
+        app.radar.err = result.get("error", "unknown")

@@ -156,7 +156,7 @@ def draw_help(app: "App", win) -> None:
             elif kind == "text":
                 safe_addstr(win, y, x, row[1][:w], curses.A_DIM)
             elif kind == "legend":
-                draw_radar_legend(win, y, x, x + w, app._radar_has_256color)
+                draw_radar_legend(win, y, x, x + w, app.radar.has_256color)
 
     if height > rows:
         shown_to = min(height, app.help_scroll + view_rows)

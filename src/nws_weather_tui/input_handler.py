@@ -118,13 +118,13 @@ def handle_mouse(app: "App", mx: int, my: int, bstate: int) -> None:
         return
     if app.view != "current" or not app.show_radar_map:
         return
-    if app._radar_map_cols <= 0 or app._radar_map_rows <= 0:
+    if app.radar.map_cols <= 0 or app.radar.map_rows <= 0:
         return
-    rx = int(mx) - app._radar_map_x
-    ry = int(my) - app._radar_map_y
-    if rx < 0 or ry < 0 or rx >= app._radar_map_cols or ry >= app._radar_map_rows:
+    rx = int(mx) - app.radar.map_x
+    ry = int(my) - app.radar.map_y
+    if rx < 0 or ry < 0 or rx >= app.radar.map_cols or ry >= app.radar.map_rows:
         return
-    hit = app._radar_city_hitmap.get((rx, ry))
+    hit = app.radar.city_hitmap.get((rx, ry))
     if not hit:
         return
     code, lat, lon = hit
@@ -251,7 +251,7 @@ def _handle_mouse_event(app: "App") -> None:
 
 
 def _do_refresh(app: "App") -> None:
-    app._radar_last = 0.0
+    app.radar.last = 0.0
     from nws_weather_tui.weather_refresh import refresh_all
     refresh_all(app, force=True, allow_offline=True)
 

@@ -210,7 +210,7 @@ def _settle(app: Any) -> None:
             app._draw()  # a draw can start a radar/dashboard fetch
             if not _busy(app):
                 return
-        target = (app._radar_src_cols, app._radar_src_rows)
+        target = (app.radar.src_cols, app.radar.src_rows)
         if not radar_targets or radar_targets[-1] != target:
             radar_targets.append(target)
         time.sleep(0.02)

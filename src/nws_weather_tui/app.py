@@ -8,7 +8,7 @@ from __future__ import annotations
 import signal
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import curses
 
@@ -31,13 +31,11 @@ from nws_weather_tui.models import (
     CurrentConditions,
     ForecastPeriod,
     HourlyPeriod,
-    RadarFrame,
     UVIndex,
 )
 from nws_weather_tui.notify import AlertNotifier
 from nws_weather_tui.persistence import build_state_dict, load_app_state, save_app_config
-from nws_weather_tui.radar.decode import RadarCell
-from nws_weather_tui.radar.state import reset_radar_state
+from nws_weather_tui.radar.state import RadarState, reset_radar_state
 from nws_weather_tui.views import (
     draw_header,
     draw_footer,
@@ -157,44 +155,16 @@ class App:
         self.hwo_scroll: int = 0
         self.dash_idx: int = 0
 
-        # --- Radar state ---
-        self._radar_frames: List[RadarFrame] = []
-        self._radar_frame_idx: int = 0
-        self._radar_anim_playing: bool = False
-        self._radar_anim_last: float = 0.0
-        self._radar_anim_interval: float = float(
-            dict(cfg.get("radar", {}) or {}).get("animation_interval_s", 0.5)
+        # --- Radar panel: frames, overlays and the fetch that feeds them ---
+        self.radar = RadarState(
+            anim_interval=float(
+                dict(cfg.get("radar", {}) or {}).get("animation_interval_s", 0.5)
+            ),
         )
-
-        self._radar_cells: List[List[RadarCell]] = []
-        self._radar_ascii: List[str] = []
-        self._radar_kind: List[str] = []
-        self._radar_ts_ms: int = 0
-        self._radar_ts_utc: str = ""
-
-        self._radar_state_overlay: List[str] = []
-        self._radar_city_overlay: List[str] = []
-        self._radar_alert_overlay: List[str] = []
-        self._radar_city_hitmap: Dict[Tuple[int, int], Tuple[str, float, float]] = {}
-        self._radar_last: float = 0.0
-        self._radar_err: Optional[str] = None
-        self._radar_bbox: Optional[Tuple[float, float, float, float]] = None
-        # State code the current bbox was built for (None = radius fallback)
-        self._radar_bbox_state: Optional[str] = None
-        self._radar_src_cols: int = 0
-        self._radar_src_rows: int = 0
-        self._radar_map_x: int = 0
-        self._radar_map_y: int = 0
-        self._radar_map_cols: int = 0
-        self._radar_map_rows: int = 0
-        self._radar_progress: Tuple[int, int] = (0, 0)
-
-        # 256-color radar mode
-        self._radar_has_256color: bool = False
 
         # --- Init curses ---
         init_curses(self.stdscr)
-        self._radar_has_256color = init_radar_colors()
+        self.radar.has_256color = init_radar_colors()
 
         refresh_all(self, force=True, allow_offline=True)
 
@@ -314,20 +284,20 @@ class App:
             if self._bg_weather_running:
                 self.status_msg = f"{frame} Loading weather data..."
             else:
-                done, total = self._radar_progress
+                done, total = self.radar.progress
                 progress = f" ({done}/{total} frames)" if total > 1 else ""
                 self.status_msg = f"{frame} Loading radar...{progress}"
             self.status_until = time.time() + 3600
 
         # Advance radar animation
-        if self._radar_anim_playing and len(self._radar_frames) > 1:
+        if self.radar.anim_playing and len(self.radar.frames) > 1:
             now = time.time()
-            if now - self._radar_anim_last >= self._radar_anim_interval:
-                self._radar_frame_idx = (
-                    (self._radar_frame_idx + 1) % len(self._radar_frames)
+            if now - self.radar.anim_last >= self.radar.anim_interval:
+                self.radar.frame_idx = (
+                    (self.radar.frame_idx + 1) % len(self.radar.frames)
                 )
                 set_current_radar_frame(self)
-                self._radar_anim_last = now
+                self.radar.anim_last = now
 
         now = time.time()
         wait_ms = 500
@@ -335,8 +305,8 @@ class App:
             wait_ms = min(wait_ms, max(50, int((self.next_refresh - now) * 1000)))
         if self.status_msg and now < self.status_until:
             wait_ms = min(wait_ms, max(50, int((self.status_until - now) * 1000)))
-        if self._radar_anim_playing and self._radar_frames:
-            wait_ms = min(wait_ms, int(self._radar_anim_interval * 1000))
+        if self.radar.anim_playing and self.radar.frames:
+            wait_ms = min(wait_ms, int(self.radar.anim_interval * 1000))
         if self._bg_weather_running or self._bg_radar_running:
             wait_ms = min(wait_ms, 200)
         self.stdscr.timeout(clamp(wait_ms, 50, 1000))
@@ -349,10 +319,10 @@ class App:
     def _draw(self) -> None:
         self.stdscr.erase()
         rows, cols = self.stdscr.getmaxyx()
-        self._radar_map_x = 0
-        self._radar_map_y = 0
-        self._radar_map_cols = 0
-        self._radar_map_rows = 0
+        self.radar.map_x = 0
+        self.radar.map_y = 0
+        self.radar.map_cols = 0
+        self.radar.map_rows = 0
 
         if rows < MIN_ROWS or cols < MIN_COLS:
             safe_addstr(

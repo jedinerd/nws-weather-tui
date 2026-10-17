@@ -53,19 +53,19 @@ def draw_radar_panel(
     show_alert_polygons = bool(radar_cfg.get("show_alert_polygons", True))
 
     # --- header line ---
-    n_frames = len(app._radar_frames)
-    frame_idx = app._radar_frame_idx + 1
+    n_frames = len(app.radar.frames)
+    frame_idx = app.radar.frame_idx + 1
     anim_tag = (
-        f"  ANIM {frame_idx}/{n_frames}" if app._radar_anim_playing
+        f"  ANIM {frame_idx}/{n_frames}" if app.radar.anim_playing
         else f"  frame {frame_idx}/{max(1, n_frames)}" if n_frames > 1
         else ""
     )
     ts_tag = ""
     age_tag = ""
-    if app._radar_ts_ms:
-        local = dt.datetime.fromtimestamp(app._radar_ts_ms / 1000).astimezone()
+    if app.radar.ts_ms:
+        local = dt.datetime.fromtimestamp(app.radar.ts_ms / 1000).astimezone()
         ts_tag = f"  {fmt_time(local, app.use_24h)}"
-        age_tag = radar_age_tag(time.time() - app._radar_ts_ms / 1000)
+        age_tag = radar_age_tag(time.time() - app.radar.ts_ms / 1000)
     state_tag = f" \u2014 {app.state_code}" if app.state_code else ""
     header = f"Radar{state_tag}{ts_tag}{anim_tag}"
     header = header[: cols - 1]
@@ -84,8 +84,8 @@ def draw_radar_panel(
 
     # Constrain width to geographic aspect ratio so tall states aren't stretched
     map_cols = max_cols
-    if app._radar_bbox:
-        minlon, minlat, maxlon, maxlat = app._radar_bbox
+    if app.radar.bbox:
+        minlon, minlat, maxlon, maxlat = app.radar.bbox
         lat_span = maxlat - minlat
         lon_span = maxlon - minlon
         if lat_span > 1e-6 and lon_span > 1e-6:
@@ -95,17 +95,17 @@ def draw_radar_panel(
             ideal_cols = int(round(geo_aspect * map_rows * 2))
             # The bbox was fitted to the last size we asked for; don't chase
             # rounding error into a refresh loop.
-            if abs(ideal_cols - app._radar_src_cols) <= 2:
-                ideal_cols = app._radar_src_cols
+            if abs(ideal_cols - app.radar.src_cols) <= 2:
+                ideal_cols = app.radar.src_cols
             map_cols = max(20, min(max_cols, ideal_cols))
 
     map_x = (cols - 1 - map_cols) // 2
 
     win_y0, win_x0 = win.getbegyx()
-    app._radar_map_x = win_x0 + map_x
-    app._radar_map_y = win_y0 + y
-    app._radar_map_cols = map_cols
-    app._radar_map_rows = max(0, map_rows)
+    app.radar.map_x = win_x0 + map_x
+    app.radar.map_y = win_y0 + y
+    app.radar.map_cols = map_cols
+    app.radar.map_rows = max(0, map_rows)
 
     if map_rows < 3:
         return
@@ -114,48 +114,48 @@ def draw_radar_panel(
     maybe_refresh_radar(app, map_cols, map_rows)
 
     # Don't draw stale data from a different size — show loading stub
-    stale = (app._radar_src_cols != map_cols or app._radar_src_rows != map_rows)
+    stale = (app.radar.src_cols != map_cols or app.radar.src_rows != map_rows)
 
-    city_lines: List[str] = app._radar_city_overlay if show_city_labels else []
-    alert_lines: List[str] = app._radar_alert_overlay if show_alert_polygons else []
+    city_lines: List[str] = app.radar.city_overlay if show_city_labels else []
+    alert_lines: List[str] = app.radar.alert_overlay if show_alert_polygons else []
 
     if stale:
         _draw_loading(win, y, map_x, map_cols, map_rows)
-    elif app._radar_has_256color and app._radar_cells:
-        for i, row_cells in enumerate(app._radar_cells[:map_rows]):
+    elif app.radar.has_256color and app.radar.cells:
+        for i, row_cells in enumerate(app.radar.cells[:map_rows]):
             ry = y + i
             if ry >= rows:
                 break
             draw_radar_halfblock_line(win, ry, row_cells, cols, x_off=map_x)
-            if show_state_lines and i < len(app._radar_state_overlay):
+            if show_state_lines and i < len(app.radar.state_overlay):
                 draw_state_overlay_line(
-                    win, ry, app._radar_state_overlay[i], cols, x_off=map_x
+                    win, ry, app.radar.state_overlay[i], cols, x_off=map_x
                 )
             if i < len(alert_lines):
                 draw_alert_overlay_line(win, ry, alert_lines[i], cols, x_off=map_x)
             if i < len(city_lines):
                 draw_city_overlay_line(win, ry, city_lines[i], cols, x_off=map_x)
 
-    elif app._radar_ascii:
-        for i, line in enumerate(app._radar_ascii[:map_rows]):
+    elif app.radar.ascii_lines:
+        for i, line in enumerate(app.radar.ascii_lines[:map_rows]):
             ry = y + i
             if ry >= rows:
                 break
-            kind = app._radar_kind[i] if i < len(app._radar_kind) else ""
+            kind = app.radar.kind_lines[i] if i < len(app.radar.kind_lines) else ""
             draw_radar_ascii_line(win, ry, line, kind, cols, ramp, x_off=map_x)
-            if show_state_lines and i < len(app._radar_state_overlay):
+            if show_state_lines and i < len(app.radar.state_overlay):
                 draw_state_overlay_line(
-                    win, ry, app._radar_state_overlay[i], cols, x_off=map_x
+                    win, ry, app.radar.state_overlay[i], cols, x_off=map_x
                 )
             if i < len(alert_lines):
                 draw_alert_overlay_line(win, ry, alert_lines[i], cols, x_off=map_x)
             if i < len(city_lines):
                 draw_city_overlay_line(win, ry, city_lines[i], cols, x_off=map_x)
 
-    elif app._radar_err:
+    elif app.radar.err:
         safe_addstr(
             win, y, map_x,
-            f"(radar unavailable: {app._radar_err})"[:map_cols],
+            f"(radar unavailable: {app.radar.err})"[:map_cols],
             curses.color_pair(4),
         )
     else:

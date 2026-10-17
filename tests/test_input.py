@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
+from nws_weather_tui.radar.state import RadarState
+
 DENVER = {"name": "Denver, CO", "lat": 39.7392, "lon": -104.9903}
 COLUMBUS = {"name": "Columbus, OH", "lat": 39.9612, "lon": -82.9988}
 VENTURA = {"name": "Ventura, CA", "lat": 34.2805, "lon": -119.2945}
@@ -25,14 +27,15 @@ class FakeApp:
         self.location_name, self.lat, self.lon = DENVER["name"], DENVER["lat"], DENVER["lon"]
         self.units, self.use_24h, self.paused = "us", False, False
         self.show_radar_map = True
+        self.radar = RadarState()
         self.forecast_periods: List[Any] = [object()] * 7
         self.hourly_periods: List[Any] = [object()] * 48
         self.fc_scroll = self.hr_scroll = self.alert_line_scroll = 0
         self.help_scroll = self.afd_scroll = self.hwo_scroll = 0
         self._dash_data: Dict[int, Any] = {1: "stale"}
-        self._radar_map_x = self._radar_map_y = 0
-        self._radar_map_cols = self._radar_map_rows = 0
-        self._radar_city_hitmap: Dict[Tuple[int, int], Tuple[str, float, float]] = {}
+        self.radar.map_x = self.radar.map_y = 0
+        self.radar.map_cols = self.radar.map_rows = 0
+        self.radar.city_hitmap: Dict[Tuple[int, int], Tuple[str, float, float]] = {}
         self.flashes: List[str] = []
         self.saves = 0
         self.jumps: List[Tuple[str, float, float]] = []
@@ -279,9 +282,9 @@ def test_clicking_a_radar_city_moves_there() -> None:
     from nws_weather_tui.input_handler import handle_mouse
 
     app = FakeApp()
-    app._radar_map_x, app._radar_map_y = 50, 4
-    app._radar_map_cols, app._radar_map_rows = 40, 20
-    app._radar_city_hitmap = {(3, 2): ("COS", 38.8339, -104.8214),
+    app.radar.map_x, app.radar.map_y = 50, 4
+    app.radar.map_cols, app.radar.map_rows = 40, 20
+    app.radar.city_hitmap = {(3, 2): ("COS", 38.8339, -104.8214),
                               (7, 9): ("DEN", DENVER["lat"], DENVER["lon"])}
     click = curses.BUTTON1_CLICKED
     handle_mouse(app, 53, 6, click)

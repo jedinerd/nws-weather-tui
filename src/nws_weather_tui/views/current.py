@@ -303,7 +303,7 @@ def draw_current(app: "App", win) -> None:
 
     # --- Windsock, top-aligned to the right of the text block ---
     if show_sock:
-        _draw_windsock(win, sock_lines[:rows], sock_x, app._radar_has_256color)
+        _draw_windsock(win, sock_lines[:rows], sock_x, app.radar.has_256color)
 
     # --- Side-by-side: the NWS narrative for the next two periods fills
     # the space under the conditions ---
